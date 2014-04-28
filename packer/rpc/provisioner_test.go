@@ -1,70 +1,48 @@
 package rpc
 
 import (
-	"cgl.tideland.biz/asserts"
 	"github.com/mitchellh/packer/packer"
-	"net/rpc"
+	"reflect"
 	"testing"
 )
 
-type testProvisioner struct {
-	prepareCalled  bool
-	prepareConfigs []interface{}
-	provCalled     bool
-	provComm       packer.Communicator
-	provUi         packer.Ui
-}
-
-func (p *testProvisioner) Prepare(configs ...interface{}) error {
-	p.prepareCalled = true
-	p.prepareConfigs = configs
-	return nil
-}
-
-func (p *testProvisioner) Provision(ui packer.Ui, comm packer.Communicator) error {
-	p.provCalled = true
-	p.provComm = comm
-	p.provUi = ui
-	return nil
-}
-
 func TestProvisionerRPC(t *testing.T) {
-	assert := asserts.NewTestingAsserts(t, true)
-
 	// Create the interface to test
-	p := new(testProvisioner)
+	p := new(packer.MockProvisioner)
 
 	// Start the server
-	server := rpc.NewServer()
-	RegisterProvisioner(server, p)
-	address := serveSingleConn(server)
-
-	// Create the client over RPC and run some methods to verify it works
-	client, err := rpc.Dial("tcp", address)
-	assert.Nil(err, "should be able to connect")
+	client, server := testClientServer(t)
+	defer client.Close()
+	defer server.Close()
+	server.RegisterProvisioner(p)
+	pClient := client.Provisioner()
 
 	// Test Prepare
 	config := 42
-	pClient := Provisioner(client)
 	pClient.Prepare(config)
-	assert.True(p.prepareCalled, "prepare should be called")
-	assert.Equal(p.prepareConfigs, []interface{}{42}, "prepare should be called with right arg")
+	if !p.PrepCalled {
+		t.Fatal("should be called")
+	}
+	expected := []interface{}{int64(42)}
+	if !reflect.DeepEqual(p.PrepConfigs, expected) {
+		t.Fatalf("bad: %#v", p.PrepConfigs)
+	}
 
 	// Test Provision
 	ui := &testUi{}
-	comm := &testCommunicator{}
+	comm := &packer.MockCommunicator{}
 	pClient.Provision(ui, comm)
-	assert.True(p.provCalled, "provision should be called")
+	if !p.ProvCalled {
+		t.Fatal("should be called")
+	}
 
-	p.provUi.Say("foo")
-	assert.True(ui.sayCalled, "say should be called")
+	// Test Cancel
+	pClient.Cancel()
+	if !p.CancelCalled {
+		t.Fatal("cancel should be called")
+	}
 }
 
 func TestProvisioner_Implements(t *testing.T) {
-	assert := asserts.NewTestingAsserts(t, true)
-
-	var r packer.Provisioner
-	p := Provisioner(nil)
-
-	assert.Implementor(p, &r, "should be a provisioner")
+	var _ packer.Provisioner = new(provisioner)
 }

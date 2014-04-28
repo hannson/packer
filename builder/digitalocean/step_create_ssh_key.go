@@ -1,15 +1,14 @@
 package digitalocean
 
 import (
-	"cgl.tideland.biz/identifier"
-	"code.google.com/p/go.crypto/ssh"
+	"code.google.com/p/gosshold/ssh"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"github.com/mitchellh/multistep"
+	"github.com/mitchellh/packer/common/uuid"
 	"github.com/mitchellh/packer/packer"
 	"log"
 )
@@ -18,9 +17,9 @@ type stepCreateSSHKey struct {
 	keyId uint
 }
 
-func (s *stepCreateSSHKey) Run(state map[string]interface{}) multistep.StepAction {
-	client := state["client"].(*DigitalOceanClient)
-	ui := state["ui"].(packer.Ui)
+func (s *stepCreateSSHKey) Run(state multistep.StateBag) multistep.StepAction {
+	client := state.Get("client").(*DigitalOceanClient)
+	ui := state.Get("ui").(packer.Ui)
 
 	ui.Say("Creating temporary ssh key for droplet...")
 
@@ -35,20 +34,21 @@ func (s *stepCreateSSHKey) Run(state map[string]interface{}) multistep.StepActio
 	}
 
 	// Set the private key in the statebag for later
-	state["privateKey"] = string(pem.EncodeToMemory(&priv_blk))
+	state.Put("privateKey", string(pem.EncodeToMemory(&priv_blk)))
 
 	// Marshal the public key into SSH compatible format
-	pub := priv.PublicKey
-	pub_sshformat := string(ssh.MarshalAuthorizedKey(&pub))
+	// TODO properly handle the public key error
+	pub, _ := ssh.NewPublicKey(&priv.PublicKey)
+	pub_sshformat := string(ssh.MarshalAuthorizedKey(pub))
 
 	// The name of the public key on DO
-	name := fmt.Sprintf("packer-%s", hex.EncodeToString(identifier.NewUUID().Raw()))
+	name := fmt.Sprintf("packer-%s", uuid.TimeOrderedUUID())
 
 	// Create the key!
 	keyId, err := client.CreateKey(name, pub_sshformat)
 	if err != nil {
 		err := fmt.Errorf("Error creating temporary SSH key: %s", err)
-		state["error"] = err
+		state.Put("error", err)
 		ui.Error(err.Error())
 		return multistep.ActionHalt
 	}
@@ -59,20 +59,20 @@ func (s *stepCreateSSHKey) Run(state map[string]interface{}) multistep.StepActio
 	log.Printf("temporary ssh key name: %s", name)
 
 	// Remember some state for the future
-	state["ssh_key_id"] = keyId
+	state.Put("ssh_key_id", keyId)
 
 	return multistep.ActionContinue
 }
 
-func (s *stepCreateSSHKey) Cleanup(state map[string]interface{}) {
+func (s *stepCreateSSHKey) Cleanup(state multistep.StateBag) {
 	// If no key name is set, then we never created it, so just return
 	if s.keyId == 0 {
 		return
 	}
 
-	client := state["client"].(*DigitalOceanClient)
-	ui := state["ui"].(packer.Ui)
-	c := state["config"].(config)
+	client := state.Get("client").(*DigitalOceanClient)
+	ui := state.Get("ui").(packer.Ui)
+	c := state.Get("config").(config)
 
 	ui.Say("Deleting temporary ssh key...")
 	err := client.DestroyKey(s.keyId)

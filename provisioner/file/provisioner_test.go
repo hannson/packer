@@ -2,7 +2,6 @@ package file
 
 import (
 	"github.com/mitchellh/packer/packer"
-	"io"
 	"io/ioutil"
 	"os"
 	"strings"
@@ -20,6 +19,18 @@ func TestProvisioner_Impl(t *testing.T) {
 	raw = &Provisioner{}
 	if _, ok := raw.(packer.Provisioner); !ok {
 		t.Fatalf("must be a provisioner")
+	}
+}
+
+func TestProvisionerPrepare_InvalidKey(t *testing.T) {
+	var p Provisioner
+	config := testConfig()
+
+	// Add a random key
+	config["i_should_not_be_valid"] = true
+	err := p.Prepare(config)
+	if err == nil {
+		t.Fatal("should have error")
 	}
 }
 
@@ -63,26 +74,6 @@ func TestProvisionerPrepare_EmptyDestination(t *testing.T) {
 	}
 }
 
-type stubUploadCommunicator struct {
-	dest string
-	data []byte
-}
-
-func (suc *stubUploadCommunicator) Download(src string, data io.Writer) error {
-	return nil
-}
-
-func (suc *stubUploadCommunicator) Upload(dest string, data io.Reader) error {
-	var err error
-	suc.dest = dest
-	suc.data, err = ioutil.ReadAll(data)
-	return err
-}
-
-func (suc *stubUploadCommunicator) Start(cmd *packer.RemoteCmd) error {
-	return nil
-}
-
 type stubUi struct {
 	sayMessages string
 }
@@ -92,6 +83,9 @@ func (su *stubUi) Ask(string) (string, error) {
 }
 
 func (su *stubUi) Error(string) {
+}
+
+func (su *stubUi) Machine(string, ...string) {
 }
 
 func (su *stubUi) Message(string) {
@@ -123,7 +117,7 @@ func TestProvisionerProvision_SendsFile(t *testing.T) {
 	}
 
 	ui := &stubUi{}
-	comm := &stubUploadCommunicator{}
+	comm := &packer.MockCommunicator{}
 	err = p.Provision(ui, comm)
 	if err != nil {
 		t.Fatalf("should successfully provision: %s", err)
@@ -137,11 +131,11 @@ func TestProvisionerProvision_SendsFile(t *testing.T) {
 		t.Fatalf("should print destination filename")
 	}
 
-	if comm.dest != "something" {
+	if comm.UploadPath != "something" {
 		t.Fatalf("should upload to configured destination")
 	}
 
-	if string(comm.data) != "hello" {
+	if comm.UploadData != "hello" {
 		t.Fatalf("should upload with source file's data")
 	}
 }

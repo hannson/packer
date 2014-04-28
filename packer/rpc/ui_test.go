@@ -1,8 +1,7 @@
 package rpc
 
 import (
-	"cgl.tideland.biz/asserts"
-	"net/rpc"
+	"reflect"
 	"testing"
 )
 
@@ -11,6 +10,9 @@ type testUi struct {
 	askQuery       string
 	errorCalled    bool
 	errorMessage   string
+	machineCalled  bool
+	machineType    string
+	machineArgs    []string
 	messageCalled  bool
 	messageMessage string
 	sayCalled      bool
@@ -28,6 +30,12 @@ func (u *testUi) Error(message string) {
 	u.errorMessage = message
 }
 
+func (u *testUi) Machine(t string, args ...string) {
+	u.machineCalled = true
+	u.machineType = t
+	u.machineArgs = args
+}
+
 func (u *testUi) Message(message string) {
 	u.messageCalled = true
 	u.messageMessage = message
@@ -39,37 +47,58 @@ func (u *testUi) Say(message string) {
 }
 
 func TestUiRPC(t *testing.T) {
-	assert := asserts.NewTestingAsserts(t, true)
-
 	// Create the UI to test
 	ui := new(testUi)
 
 	// Start the RPC server
-	server := rpc.NewServer()
-	RegisterUi(server, ui)
-	address := serveSingleConn(server)
+	client, server := testClientServer(t)
+	defer client.Close()
+	defer server.Close()
+	server.RegisterUi(ui)
 
-	// Create the client over RPC and run some methods to verify it works
-	client, err := rpc.Dial("tcp", address)
-	if err != nil {
-		panic(err)
-	}
-
-	uiClient := &Ui{client}
+	uiClient := client.Ui()
 
 	// Basic error and say tests
 	result, err := uiClient.Ask("query")
-	assert.Nil(err, "should not error")
-	assert.True(ui.askCalled, "ask should be called")
-	assert.Equal(ui.askQuery, "query", "should be correct")
-	assert.Equal(result, "foo", "should have correct result")
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	if !ui.askCalled {
+		t.Fatal("should be called")
+	}
+	if ui.askQuery != "query" {
+		t.Fatalf("bad: %s", ui.askQuery)
+	}
+	if result != "foo" {
+		t.Fatalf("bad: %#v", result)
+	}
 
 	uiClient.Error("message")
-	assert.Equal(ui.errorMessage, "message", "message should be correct")
+	if ui.errorMessage != "message" {
+		t.Fatalf("bad: %#v", ui.errorMessage)
+	}
 
 	uiClient.Message("message")
-	assert.Equal(ui.messageMessage, "message", "message should be correct")
+	if ui.messageMessage != "message" {
+		t.Fatalf("bad: %#v", ui.errorMessage)
+	}
 
 	uiClient.Say("message")
-	assert.Equal(ui.sayMessage, "message", "message should be correct")
+	if ui.sayMessage != "message" {
+		t.Fatalf("bad: %#v", ui.errorMessage)
+	}
+
+	uiClient.Machine("foo", "bar", "baz")
+	if !ui.machineCalled {
+		t.Fatal("machine should be called")
+	}
+
+	if ui.machineType != "foo" {
+		t.Fatalf("bad type: %#v", ui.machineType)
+	}
+
+	expected := []string{"bar", "baz"}
+	if !reflect.DeepEqual(ui.machineArgs, expected) {
+		t.Fatalf("bad: %#v", ui.machineArgs)
+	}
 }

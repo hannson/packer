@@ -4,23 +4,27 @@ package shell
 
 import (
 	"bufio"
-	"bytes"
 	"errors"
 	"fmt"
-	"github.com/mitchellh/iochan"
-	"github.com/mitchellh/mapstructure"
+	"github.com/mitchellh/packer/common"
 	"github.com/mitchellh/packer/packer"
 	"io"
 	"io/ioutil"
 	"log"
 	"os"
 	"strings"
-	"text/template"
+	"time"
 )
 
 const DefaultRemotePath = "/tmp/script.sh"
 
 type config struct {
+	common.PackerConfig `mapstructure:",squash"`
+
+	// If true, the script contains binary and line endings will not be
+	// converted from Windows to Unix-style.
+	Binary bool
+
 	// An inline script to execute. Multiple strings are all executed
 	// in the context of a single shell.
 	Inline []string
@@ -46,6 +50,14 @@ type config struct {
 	// should be used to specify where the script goes, {{ .Vars }}
 	// can be used to inject the environment_vars into the environment.
 	ExecuteCommand string `mapstructure:"execute_command"`
+
+	// The timeout for retrying to start the process. Until this timeout
+	// is reached, if the provisioner can't start a process, it retries.
+	// This can be set high to allow for reboots.
+	RawStartRetryTimeout string `mapstructure:"start_retry_timeout"`
+
+	startRetryTimeout time.Duration
+	tpl               *packer.ConfigTemplate
 }
 
 type Provisioner struct {
@@ -58,11 +70,19 @@ type ExecuteCommandTemplate struct {
 }
 
 func (p *Provisioner) Prepare(raws ...interface{}) error {
-	for _, raw := range raws {
-		if err := mapstructure.Decode(raw, &p.config); err != nil {
-			return err
-		}
+	md, err := common.DecodeConfig(&p.config, raws...)
+	if err != nil {
+		return err
 	}
+
+	p.config.tpl, err = packer.NewConfigTemplate()
+	if err != nil {
+		return err
+	}
+	p.config.tpl.UserVars = p.config.PackerUserVars
+
+	// Accumulate any errors
+	errs := common.CheckUnusedConfig(md)
 
 	if p.config.ExecuteCommand == "" {
 		p.config.ExecuteCommand = "chmod +x {{.Path}}; {{.Vars}} {{.Path}}"
@@ -74,6 +94,10 @@ func (p *Provisioner) Prepare(raws ...interface{}) error {
 
 	if p.config.InlineShebang == "" {
 		p.config.InlineShebang = "/bin/sh"
+	}
+
+	if p.config.RawStartRetryTimeout == "" {
+		p.config.RawStartRetryTimeout = "5m"
 	}
 
 	if p.config.RemotePath == "" {
@@ -88,38 +112,82 @@ func (p *Provisioner) Prepare(raws ...interface{}) error {
 		p.config.Vars = make([]string, 0)
 	}
 
-	errs := make([]error, 0)
-
 	if p.config.Script != "" && len(p.config.Scripts) > 0 {
-		errs = append(errs, errors.New("Only one of script or scripts can be specified."))
+		errs = packer.MultiErrorAppend(errs,
+			errors.New("Only one of script or scripts can be specified."))
 	}
 
 	if p.config.Script != "" {
 		p.config.Scripts = []string{p.config.Script}
 	}
 
+	templates := map[string]*string{
+		"inline_shebang":      &p.config.InlineShebang,
+		"script":              &p.config.Script,
+		"start_retry_timeout": &p.config.RawStartRetryTimeout,
+		"remote_path":         &p.config.RemotePath,
+	}
+
+	for n, ptr := range templates {
+		var err error
+		*ptr, err = p.config.tpl.Process(*ptr, nil)
+		if err != nil {
+			errs = packer.MultiErrorAppend(
+				errs, fmt.Errorf("Error processing %s: %s", n, err))
+		}
+	}
+
+	sliceTemplates := map[string][]string{
+		"inline":           p.config.Inline,
+		"scripts":          p.config.Scripts,
+		"environment_vars": p.config.Vars,
+	}
+
+	for n, slice := range sliceTemplates {
+		for i, elem := range slice {
+			var err error
+			slice[i], err = p.config.tpl.Process(elem, nil)
+			if err != nil {
+				errs = packer.MultiErrorAppend(
+					errs, fmt.Errorf("Error processing %s[%d]: %s", n, i, err))
+			}
+		}
+	}
+
 	if len(p.config.Scripts) == 0 && p.config.Inline == nil {
-		errs = append(errs, errors.New("Either a script file or inline script must be specified."))
+		errs = packer.MultiErrorAppend(errs,
+			errors.New("Either a script file or inline script must be specified."))
 	} else if len(p.config.Scripts) > 0 && p.config.Inline != nil {
-		errs = append(errs, errors.New("Only a script file or an inline script can be specified, not both."))
+		errs = packer.MultiErrorAppend(errs,
+			errors.New("Only a script file or an inline script can be specified, not both."))
 	}
 
 	for _, path := range p.config.Scripts {
 		if _, err := os.Stat(path); err != nil {
-			errs = append(errs, fmt.Errorf("Bad script '%s': %s", path, err))
+			errs = packer.MultiErrorAppend(errs,
+				fmt.Errorf("Bad script '%s': %s", path, err))
 		}
 	}
 
 	// Do a check for bad environment variables, such as '=foo', 'foobar'
 	for _, kv := range p.config.Vars {
-		vs := strings.Split(kv, "=")
+		vs := strings.SplitN(kv, "=", 2)
 		if len(vs) != 2 || vs[0] == "" {
-			errs = append(errs, fmt.Errorf("Environment variable not in format 'key=value': %s", kv))
+			errs = packer.MultiErrorAppend(errs,
+				fmt.Errorf("Environment variable not in format 'key=value': %s", kv))
 		}
 	}
 
-	if len(errs) > 0 {
-		return &packer.MultiError{errs}
+	if p.config.RawStartRetryTimeout != "" {
+		p.config.startRetryTimeout, err = time.ParseDuration(p.config.RawStartRetryTimeout)
+		if err != nil {
+			errs = packer.MultiErrorAppend(
+				errs, fmt.Errorf("Failed parsing start_retry_timeout: %s", err))
+		}
+	}
+
+	if errs != nil && len(errs.Errors) > 0 {
+		return errs
 	}
 
 	return nil
@@ -157,6 +225,12 @@ func (p *Provisioner) Provision(ui packer.Ui, comm packer.Communicator) error {
 		tf.Close()
 	}
 
+	// Build our variables up by adding in the build name and builder type
+	envVars := make([]string, len(p.config.Vars)+2)
+	envVars[0] = "PACKER_BUILD_NAME=" + p.config.PackerBuildName
+	envVars[1] = "PACKER_BUILDER_TYPE=" + p.config.PackerBuilderType
+	copy(envVars[2:], p.config.Vars)
+
 	for _, path := range scripts {
 		ui.Say(fmt.Sprintf("Provisioning with shell script: %s", path))
 
@@ -167,78 +241,94 @@ func (p *Provisioner) Provision(ui packer.Ui, comm packer.Communicator) error {
 		}
 		defer f.Close()
 
-		log.Printf("Uploading %s => %s", path, p.config.RemotePath)
-		err = comm.Upload(p.config.RemotePath, f)
+		// Flatten the environment variables
+		flattendVars := strings.Join(envVars, " ")
+
+		// Compile the command
+		command, err := p.config.tpl.Process(p.config.ExecuteCommand, &ExecuteCommandTemplate{
+			Vars: flattendVars,
+			Path: p.config.RemotePath,
+		})
 		if err != nil {
-			return fmt.Errorf("Error uploading shell script: %s", err)
+			return fmt.Errorf("Error processing command: %s", err)
+		}
+
+		// Upload the file and run the command. Do this in the context of
+		// a single retryable function so that we don't end up with
+		// the case that the upload succeeded, a restart is initiated,
+		// and then the command is executed but the file doesn't exist
+		// any longer.
+		var cmd *packer.RemoteCmd
+		err = p.retryable(func() error {
+			if _, err := f.Seek(0, 0); err != nil {
+				return err
+			}
+
+			var r io.Reader = f
+			if !p.config.Binary {
+				r = &UnixReader{Reader: r}
+			}
+
+			if err := comm.Upload(p.config.RemotePath, r); err != nil {
+				return fmt.Errorf("Error uploading script: %s", err)
+			}
+
+			cmd = &packer.RemoteCmd{
+				Command: fmt.Sprintf("chmod 0777 %s", p.config.RemotePath),
+			}
+			if err := comm.Start(cmd); err != nil {
+				return fmt.Errorf(
+					"Error chmodding script file to 0777 in remote "+
+						"machine: %s", err)
+			}
+			cmd.Wait()
+
+			cmd = &packer.RemoteCmd{Command: command}
+			return cmd.StartWithUi(comm, ui)
+		})
+		if err != nil {
+			return err
 		}
 
 		// Close the original file since we copied it
 		f.Close()
 
-		// Flatten the environment variables
-		flattendVars := strings.Join(p.config.Vars, " ")
-
-		// Compile the command
-		var command bytes.Buffer
-		t := template.Must(template.New("command").Parse(p.config.ExecuteCommand))
-		t.Execute(&command, &ExecuteCommandTemplate{flattendVars, p.config.RemotePath})
-
-		// Setup the remote command
-		stdout_r, stdout_w := io.Pipe()
-		stderr_r, stderr_w := io.Pipe()
-
-		var cmd packer.RemoteCmd
-		cmd.Command = command.String()
-		cmd.Stdout = stdout_w
-		cmd.Stderr = stderr_w
-
-		log.Printf("Executing command: %s", cmd.Command)
-		err = comm.Start(&cmd)
-		if err != nil {
-			return fmt.Errorf("Failed executing command: %s", err)
-		}
-
-		exitChan := make(chan int, 1)
-		stdoutChan := iochan.DelimReader(stdout_r, '\n')
-		stderrChan := iochan.DelimReader(stderr_r, '\n')
-
-		go func() {
-			defer stdout_w.Close()
-			defer stderr_w.Close()
-
-			cmd.Wait()
-			exitChan <- cmd.ExitStatus
-		}()
-
-	OutputLoop:
-		for {
-			select {
-			case output := <-stderrChan:
-				ui.Message(strings.TrimSpace(output))
-			case output := <-stdoutChan:
-				ui.Message(strings.TrimSpace(output))
-			case exitStatus := <-exitChan:
-				log.Printf("shell provisioner exited with status %d", exitStatus)
-
-				if exitStatus != 0 {
-					return fmt.Errorf("Script exited with non-zero exit status: %d", exitStatus)
-				}
-
-				break OutputLoop
-			}
-		}
-
-		// Make sure we finish off stdout/stderr because we may have gotten
-		// a message from the exit channel first.
-		for output := range stdoutChan {
-			ui.Message(output)
-		}
-
-		for output := range stderrChan {
-			ui.Message(output)
+		if cmd.ExitStatus != 0 {
+			return fmt.Errorf("Script exited with non-zero exit status: %d", cmd.ExitStatus)
 		}
 	}
 
 	return nil
+}
+
+func (p *Provisioner) Cancel() {
+	// Just hard quit. It isn't a big deal if what we're doing keeps
+	// running on the other side.
+	os.Exit(0)
+}
+
+// retryable will retry the given function over and over until a
+// non-error is returned.
+func (p *Provisioner) retryable(f func() error) error {
+	startTimeout := time.After(p.config.startRetryTimeout)
+	for {
+		var err error
+		if err = f(); err == nil {
+			return nil
+		}
+
+		// Create an error and log it
+		err = fmt.Errorf("Retryable error: %s", err)
+		log.Printf(err.Error())
+
+		// Check if we timed out, otherwise we retry. It is safe to
+		// retry since the only error case above is if the command
+		// failed to START.
+		select {
+		case <-startTimeout:
+			return err
+		default:
+			time.Sleep(2 * time.Second)
+		}
+	}
 }

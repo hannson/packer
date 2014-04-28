@@ -1,9 +1,8 @@
 package rpc
 
 import (
-	"cgl.tideland.biz/asserts"
 	"github.com/mitchellh/packer/packer"
-	"net/rpc"
+	"reflect"
 	"testing"
 )
 
@@ -29,50 +28,44 @@ func (tc *TestCommand) Synopsis() string {
 }
 
 func TestRPCCommand(t *testing.T) {
-	assert := asserts.NewTestingAsserts(t, true)
-
 	// Create the command
 	command := new(TestCommand)
 
 	// Start the server
-	server := rpc.NewServer()
-	RegisterCommand(server, command)
-	address := serveSingleConn(server)
-
-	// Create the command client over RPC and run some methods to verify
-	// we get the proper behavior.
-	client, err := rpc.Dial("tcp", address)
-	assert.Nil(err, "should be no error")
-
-	clientComm := Command(client)
+	client, server := testClientServer(t)
+	defer client.Close()
+	defer server.Close()
+	server.RegisterCommand(command)
+	commClient := client.Command()
 
 	//Test Help
-	help := clientComm.Help()
-	assert.Equal(help, "bar", "helps hould be correct")
+	help := commClient.Help()
+	if help != "bar" {
+		t.Fatalf("bad: %s", help)
+	}
 
 	// Test run
 	runArgs := []string{"foo", "bar"}
 	testEnv := &testEnvironment{}
-	exitCode := clientComm.Run(testEnv, runArgs)
-	assert.Equal(command.runArgs, runArgs, "Correct args should be sent")
-	assert.Equal(exitCode, 0, "Exit code should be correct")
+	exitCode := commClient.Run(testEnv, runArgs)
+	if !reflect.DeepEqual(command.runArgs, runArgs) {
+		t.Fatalf("bad: %#v", command.runArgs)
+	}
+	if exitCode != 0 {
+		t.Fatalf("bad: %d", exitCode)
+	}
 
-	assert.NotNil(command.runEnv, "should have an env")
-	if command.runEnv != nil {
-		command.runEnv.Ui()
-		assert.True(testEnv.uiCalled, "UI should be called on env")
+	if command.runEnv == nil {
+		t.Fatal("runEnv should not be nil")
 	}
 
 	// Test Synopsis
-	synopsis := clientComm.Synopsis()
-	assert.Equal(synopsis, "foo", "Synopsis should be correct")
+	synopsis := commClient.Synopsis()
+	if synopsis != "foo" {
+		t.Fatalf("bad: %#v", synopsis)
+	}
 }
 
 func TestCommand_Implements(t *testing.T) {
-	assert := asserts.NewTestingAsserts(t, true)
-
-	var r packer.Command
-	c := Command(nil)
-
-	assert.Implementor(c, &r, "should be a Builder")
+	var _ packer.Command = new(command)
 }

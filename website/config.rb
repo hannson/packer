@@ -12,12 +12,12 @@ $packer_os = []
 if !ENV["PACKER_DISABLE_DOWNLOAD_FETCH"]
   raise "BINTRAY_API_KEY must be set." if !ENV["BINTRAY_API_KEY"]
   http = Net::HTTP.new("dl.bintray.com", 80)
-  req = Net::HTTP::Get.new("/mitchellh/packer")
+  req = Net::HTTP::Get.new("/mitchellh/packer/")
   req.basic_auth "mitchellh", ENV["BINTRAY_API_KEY"]
   response = http.request(req)
 
   response.body.split("\n").each do |line|
-    next if line !~ /\/mitchellh\/packer\/(#{ENV["PACKER_VERSION"]}.+?)\?/
+    next if line !~ /\/mitchellh\/packer\/(#{Regexp.quote(ENV["PACKER_VERSION"])}.+?)'/
     filename = $1.to_s
     os = filename.split("_")[1]
     next if os == "SHA256SUMS"
@@ -45,7 +45,9 @@ set :images_dir, 'images'
 
 # Use the RedCarpet Markdown engine
 set :markdown_engine, :redcarpet
-set :markdown, :fenced_code_blocks => true
+set :markdown,
+    :fenced_code_blocks => true,
+    :with_toc_data => true
 
 # Build-specific configuration
 configure :build do
@@ -82,7 +84,7 @@ helpers do
   end
 
   def download_url(file)
-    "https://dl.bintray.com/mitchellh/packer/#{file}?direct"
+    "https://dl.bintray.com/mitchellh/packer/#{file}"
   end
 
   def latest_version

@@ -35,26 +35,27 @@ Required:
 
 Optional:
 
-* `event_delay` (string) - The delay, as a duration string, before checking
-  the status of an event. DigitalOcean's current API has consistency issues
-  where events take time to appear after being created. This defaults to "5s"
-  and generally shouldn't have to be changed.
-
 * `image_id` (int) - The ID of the base image to use. This is the image that
-  will be used to launch a new droplet and provision it. Defaults to "284203",
-  which happens to be "Ubuntu 12.04 x64 Server."
+  will be used to launch a new droplet and provision it. Defaults to "3101045",
+  which happens to be "Ubuntu 12.04.4 x64".
 
 * `region_id` (int) - The ID of the region to launch the droplet in. Consequently,
   this is the region where the snapshot will be available. This defaults to
-  "1", which is "New York."
+  "1", which is "New York 1".
 
-* `size_id` (int) - The ID of the droplet size to use. This defaults to "66,"
+* `size_id` (int) - The ID of the droplet size to use. This defaults to "66",
   which is the 512MB droplet.
 
+* `private_networking` (bool) - Set to `true` to enable private networking
+  for the droplet being created. This defaults to `false`, or not enabled.
+
 * `snapshot_name` (string) - The name of the resulting snapshot that will
-  appear in your account. This must be unique. To help make this unique,
-  certain template parameters are available for this value, and are documented
-  below.
+  appear in your account. This must be unique.
+  To help make this unique, use a function like `timestamp` (see
+  [configuration templates](/docs/templates/configuration-templates.html) for more info)
+
+* `droplet_name` (string) - The name assigned to the droplet. DigitalOcean
+  sets the hostname of the machine to this value.
 
 * `ssh_port` (int) - The port that SSH will be available on. Defaults to port
   22.
@@ -82,17 +83,6 @@ own access tokens:
   "api_key": "YOUR API KEY"
 }
 </pre>
-
-## Snapshot Name Variables
-
-The `snapshot_name` for a DigitalOcean image must be unique. The configuration
-variable is actually treated as a [configuration template](/docs/templates/configuration-templates.html) and has various variables available to help keep this unique. Read
-the prior linked page for information on syntax if you're unfamiliar with it.
-
-The available variables are shown below:
-
-* `CreateTime` - This will be replaced with the Unix timestamp of when the
-  image is created.
 
 ## Finding Image, Region, and Size IDs
 

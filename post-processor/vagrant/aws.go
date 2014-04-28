@@ -1,115 +1,49 @@
 package vagrant
 
 import (
+	"bytes"
 	"fmt"
-	"github.com/mitchellh/mapstructure"
-	"github.com/mitchellh/packer/packer"
-	"io/ioutil"
-	"log"
-	"os"
-	"path/filepath"
 	"strings"
 	"text/template"
+
+	"github.com/mitchellh/packer/packer"
 )
 
-type AWSBoxConfig struct {
-	OutputPath          string `mapstructure:"output"`
-	VagrantfileTemplate string `mapstructure:"vagrantfile_template"`
+type AWSProvider struct{}
 
-	PackerBuildName string `mapstructure:"packer_build_name"`
+func (p *AWSProvider) KeepInputArtifact() bool {
+	return true
 }
 
-type AWSVagrantfileTemplate struct {
-	Images map[string]string
-}
+func (p *AWSProvider) Process(ui packer.Ui, artifact packer.Artifact, dir string) (vagrantfile string, metadata map[string]interface{}, err error) {
+	// Create the metadata
+	metadata = map[string]interface{}{"provider": "aws"}
 
-type AWSBoxPostProcessor struct {
-	config AWSBoxConfig
-}
-
-func (p *AWSBoxPostProcessor) Configure(raws ...interface{}) error {
-	for _, raw := range raws {
-		err := mapstructure.Decode(raw, &p.config)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (p *AWSBoxPostProcessor) PostProcess(ui packer.Ui, artifact packer.Artifact) (packer.Artifact, bool, error) {
-	// Determine the regions...
-	tplData := &AWSVagrantfileTemplate{
+	// Build up the template data to build our Vagrantfile
+	tplData := &awsVagrantfileTemplate{
 		Images: make(map[string]string),
 	}
 
 	for _, regions := range strings.Split(artifact.Id(), ",") {
 		parts := strings.Split(regions, ":")
 		if len(parts) != 2 {
-			return nil, false, fmt.Errorf("Poorly formatted artifact ID: %s", artifact.Id())
+			err = fmt.Errorf("Poorly formatted artifact ID: %s", artifact.Id())
+			return
 		}
 
 		tplData.Images[parts[0]] = parts[1]
 	}
 
-	// Compile the output path
-	outputPath, err := ProcessOutputPath(p.config.OutputPath,
-		p.config.PackerBuildName, "aws", artifact)
-	if err != nil {
-		return nil, false, err
-	}
+	// Build up the contents
+	var contents bytes.Buffer
+	t := template.Must(template.New("vf").Parse(defaultAWSVagrantfile))
+	err = t.Execute(&contents, tplData)
+	vagrantfile = contents.String()
+	return
+}
 
-	// Create a temporary directory for us to build the contents of the box in
-	dir, err := ioutil.TempDir("", "packer")
-	if err != nil {
-		return nil, false, err
-	}
-	defer os.RemoveAll(dir)
-
-	// Create the Vagrantfile from the template
-	vf, err := os.Create(filepath.Join(dir, "Vagrantfile"))
-	if err != nil {
-		return nil, false, err
-	}
-	defer vf.Close()
-
-	vagrantfileContents := defaultAWSVagrantfile
-	if p.config.VagrantfileTemplate != "" {
-		log.Printf("Using vagrantfile template: %s", p.config.VagrantfileTemplate)
-		f, err := os.Open(p.config.VagrantfileTemplate)
-		if err != nil {
-			err = fmt.Errorf("error opening vagrantfile template: %s", err)
-			return nil, false, err
-		}
-		defer f.Close()
-
-		contents, err := ioutil.ReadAll(f)
-		if err != nil {
-			err = fmt.Errorf("error reading vagrantfile template: %s", err)
-			return nil, false, err
-		}
-
-		vagrantfileContents = string(contents)
-	}
-
-	t := template.Must(template.New("vagrantfile").Parse(vagrantfileContents))
-	t.Execute(vf, tplData)
-	vf.Close()
-
-	// Create the metadata
-	metadata := map[string]string{"provider": "aws"}
-	if err := WriteMetadata(dir, metadata); err != nil {
-		return nil, false, err
-	}
-
-	// Compress the directory to the given output path
-	if err := DirToBox(outputPath, dir); err != nil {
-		err = fmt.Errorf("error creating box: %s", err)
-		return nil, false, err
-	}
-
-	return NewArtifact("aws", outputPath), true, nil
+type awsVagrantfileTemplate struct {
+	Images map[string]string
 }
 
 var defaultAWSVagrantfile = `

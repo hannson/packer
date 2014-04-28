@@ -1,20 +1,26 @@
 package plugin
 
 import (
-	"bytes"
+	"bufio"
 	"errors"
 	"fmt"
 	"github.com/mitchellh/packer/packer"
 	packrpc "github.com/mitchellh/packer/packer/rpc"
 	"io"
+	"io/ioutil"
 	"log"
-	"net/rpc"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
+
+// If this is true, then the "unexpected EOF" panic will not be
+// raised throughout the clients.
+var Killed = false
 
 // This is a slice of the "managed" clients which are cleaned up when
 // calling Cleanup
@@ -26,9 +32,9 @@ var managedClients = make([]*Client, 0, 5)
 type Client struct {
 	config      *ClientConfig
 	exited      bool
-	doneLogging bool
+	doneLogging chan struct{}
 	l           sync.Mutex
-	address     string
+	address     net.Addr
 }
 
 // ClientConfig is the configuration used to initialize a new
@@ -53,6 +59,10 @@ type ClientConfig struct {
 	// StartTimeout is the timeout to wait for the plugin to say it
 	// has started successfully.
 	StartTimeout time.Duration
+
+	// If non-nil, then the stderr of the client will be written to here
+	// (as well as the log).
+	Stderr io.Writer
 }
 
 // This makes sure all the managed subprocesses are killed and properly
@@ -61,6 +71,9 @@ type ClientConfig struct {
 //
 // This must only be called _once_.
 func CleanupClients() {
+	// Set the killed to true so that we don't get unexpected panics
+	Killed = true
+
 	// Kill all the managed clients in parallel and use a WaitGroup
 	// to wait for them all to finish up.
 	var wg sync.WaitGroup
@@ -94,6 +107,10 @@ func NewClient(config *ClientConfig) (c *Client) {
 		config.StartTimeout = 1 * time.Minute
 	}
 
+	if config.Stderr == nil {
+		config.Stderr = ioutil.Discard
+	}
+
 	c = &Client{config: config}
 	if config.Managed {
 		managedClients = append(managedClients, c)
@@ -104,62 +121,64 @@ func NewClient(config *ClientConfig) (c *Client) {
 
 // Tells whether or not the underlying process has exited.
 func (c *Client) Exited() bool {
+	c.l.Lock()
+	defer c.l.Unlock()
 	return c.exited
 }
 
 // Returns a builder implementation that is communicating over this
 // client. If the client hasn't been started, this will start it.
 func (c *Client) Builder() (packer.Builder, error) {
-	client, err := c.rpcClient()
+	client, err := c.packrpcClient()
 	if err != nil {
 		return nil, err
 	}
 
-	return &cmdBuilder{packrpc.Builder(client), c}, nil
+	return &cmdBuilder{client.Builder(), c}, nil
 }
 
 // Returns a command implementation that is communicating over this
 // client. If the client hasn't been started, this will start it.
 func (c *Client) Command() (packer.Command, error) {
-	client, err := c.rpcClient()
+	client, err := c.packrpcClient()
 	if err != nil {
 		return nil, err
 	}
 
-	return &cmdCommand{packrpc.Command(client), c}, nil
+	return &cmdCommand{client.Command(), c}, nil
 }
 
 // Returns a hook implementation that is communicating over this
 // client. If the client hasn't been started, this will start it.
 func (c *Client) Hook() (packer.Hook, error) {
-	client, err := c.rpcClient()
+	client, err := c.packrpcClient()
 	if err != nil {
 		return nil, err
 	}
 
-	return &cmdHook{packrpc.Hook(client), c}, nil
+	return &cmdHook{client.Hook(), c}, nil
 }
 
 // Returns a post-processor implementation that is communicating over
 // this client. If the client hasn't been started, this will start it.
 func (c *Client) PostProcessor() (packer.PostProcessor, error) {
-	client, err := c.rpcClient()
+	client, err := c.packrpcClient()
 	if err != nil {
 		return nil, err
 	}
 
-	return &cmdPostProcessor{packrpc.PostProcessor(client), c}, nil
+	return &cmdPostProcessor{client.PostProcessor(), c}, nil
 }
 
 // Returns a provisioner implementation that is communicating over this
 // client. If the client hasn't been started, this will start it.
 func (c *Client) Provisioner() (packer.Provisioner, error) {
-	client, err := c.rpcClient()
+	client, err := c.packrpcClient()
 	if err != nil {
 		return nil, err
 	}
 
-	return &cmdProvisioner{packrpc.Provisioner(client), c}, nil
+	return &cmdProvisioner{client.Provisioner(), c}, nil
 }
 
 // End the executing subprocess (if it is running) and perform any cleanup
@@ -178,16 +197,7 @@ func (c *Client) Kill() {
 	cmd.Process.Kill()
 
 	// Wait for the client to finish logging so we have a complete log
-	done := make(chan bool)
-	go func() {
-		for !c.doneLogging {
-			time.Sleep(10 * time.Millisecond)
-		}
-
-		done <- true
-	}()
-
-	<-done
+	<-c.doneLogging
 }
 
 // Starts the underlying subprocess, communicating with it to negotiate
@@ -196,13 +206,15 @@ func (c *Client) Kill() {
 // This method is safe to call multiple times. Subsequent calls have no effect.
 // Once a client has been started once, it cannot be started again, even if
 // it was killed.
-func (c *Client) Start() (address string, err error) {
+func (c *Client) Start() (addr net.Addr, err error) {
 	c.l.Lock()
 	defer c.l.Unlock()
 
-	if c.address != "" {
+	if c.address != nil {
 		return c.address, nil
 	}
+
+	c.doneLogging = make(chan struct{})
 
 	env := []string{
 		fmt.Sprintf("%s=%s", MagicCookieKey, MagicCookieValue),
@@ -210,14 +222,15 @@ func (c *Client) Start() (address string, err error) {
 		fmt.Sprintf("PACKER_PLUGIN_MAX_PORT=%d", c.config.MaxPort),
 	}
 
-	stdout := new(bytes.Buffer)
-	stderr := new(bytes.Buffer)
+	stdout_r, stdout_w := io.Pipe()
+	stderr_r, stderr_w := io.Pipe()
 
 	cmd := c.config.Cmd
 	cmd.Env = append(cmd.Env, os.Environ()...)
 	cmd.Env = append(cmd.Env, env...)
-	cmd.Stderr = stderr
-	cmd.Stdout = stdout
+	cmd.Stdin = os.Stdin
+	cmd.Stderr = stderr_w
+	cmd.Stdout = stdout_w
 
 	log.Printf("Starting plugin: %s %#v", cmd.Path, cmd.Args)
 	err = cmd.Start()
@@ -239,84 +252,140 @@ func (c *Client) Start() (address string, err error) {
 	}()
 
 	// Start goroutine to wait for process to exit
+	exitCh := make(chan struct{})
 	go func() {
+		// Make sure we close the write end of our stderr/stdout so
+		// that the readers send EOF properly.
+		defer stderr_w.Close()
+		defer stdout_w.Close()
+
+		// Wait for the command to end.
 		cmd.Wait()
+
+		// Log and make sure to flush the logs write away
 		log.Printf("%s: plugin process exited\n", cmd.Path)
+		os.Stderr.Sync()
+
+		// Mark that we exited
+		close(exitCh)
+
+		// Set that we exited, which takes a lock
+		c.l.Lock()
+		defer c.l.Unlock()
 		c.exited = true
 	}()
 
 	// Start goroutine that logs the stderr
-	go c.logStderr(stderr)
+	go c.logStderr(stderr_r)
+
+	// Start a goroutine that is going to be reading the lines
+	// out of stdout
+	linesCh := make(chan []byte)
+	go func() {
+		defer close(linesCh)
+
+		buf := bufio.NewReader(stdout_r)
+		for {
+			line, err := buf.ReadBytes('\n')
+			if line != nil {
+				linesCh <- line
+			}
+
+			if err == io.EOF {
+				return
+			}
+		}
+	}()
+
+	// Make sure after we exit we read the lines from stdout forever
+	// so they dont' block since it is an io.Pipe
+	defer func() {
+		go func() {
+			for _ = range linesCh {
+			}
+		}()
+	}()
 
 	// Some channels for the next step
 	timeout := time.After(c.config.StartTimeout)
 
 	// Start looking for the address
 	log.Printf("Waiting for RPC address for: %s", cmd.Path)
-	for done := false; !done; {
-		select {
-		case <-timeout:
-			err = errors.New("timeout while waiting for plugin to start")
-			done = true
-		default:
-		}
-
-		if err == nil && c.Exited() {
-			err = errors.New("plugin exited before we could connect")
-			done = true
-		}
-
-		if line, lerr := stdout.ReadBytes('\n'); lerr == nil {
-			// Trim the address and reset the err since we were able
-			// to read some sort of address.
-			c.address = strings.TrimSpace(string(line))
-			address = c.address
-			err = nil
-			break
-		}
-
-		// If error is nil from previously, return now
-		if err != nil {
+	select {
+	case <-timeout:
+		err = errors.New("timeout while waiting for plugin to start")
+	case <-exitCh:
+		err = errors.New("plugin exited before we could connect")
+	case lineBytes := <-linesCh:
+		// Trim the line and split by "|" in order to get the parts of
+		// the output.
+		line := strings.TrimSpace(string(lineBytes))
+		parts := strings.SplitN(line, "|", 3)
+		if len(parts) < 3 {
+			err = fmt.Errorf("Unrecognized remote plugin message: %s", line)
 			return
 		}
 
-		// Wait a bit
-		time.Sleep(10 * time.Millisecond)
+		// Test the API version
+		if parts[0] != APIVersion {
+			err = fmt.Errorf("Incompatible API version with plugin. "+
+				"Plugin version: %s, Ours: %s", parts[0], APIVersion)
+			return
+		}
+
+		switch parts[1] {
+		case "tcp":
+			addr, err = net.ResolveTCPAddr("tcp", parts[2])
+		case "unix":
+			addr, err = net.ResolveUnixAddr("unix", parts[2])
+		default:
+			err = fmt.Errorf("Unknown address type: %s", parts[1])
+		}
 	}
 
+	c.address = addr
 	return
 }
 
-func (c *Client) logStderr(buf *bytes.Buffer) {
-	for done := false; !done; {
-		if c.Exited() {
-			done = true
+func (c *Client) logStderr(r io.Reader) {
+	bufR := bufio.NewReader(r)
+	for {
+		line, err := bufR.ReadString('\n')
+		if line != "" {
+			c.config.Stderr.Write([]byte(line))
+
+			line = strings.TrimRightFunc(line, unicode.IsSpace)
+			log.Printf("%s: %s", c.config.Cmd.Path, line)
 		}
 
-		var err error
-		for err != io.EOF {
-			var line string
-			line, err = buf.ReadString('\n')
-			if line != "" {
-				log.Printf("%s: %s", c.config.Cmd.Path, line)
-			}
+		if err == io.EOF {
+			break
 		}
-
-		time.Sleep(10 * time.Millisecond)
 	}
 
 	// Flag that we've completed logging for others
-	c.doneLogging = true
+	close(c.doneLogging)
 }
 
-func (c *Client) rpcClient() (*rpc.Client, error) {
-	address, err := c.Start()
+func (c *Client) packrpcClient() (*packrpc.Client, error) {
+	addr, err := c.Start()
 	if err != nil {
 		return nil, err
 	}
 
-	client, err := rpc.Dial("tcp", address)
+	conn, err := net.Dial(addr.Network(), addr.String())
 	if err != nil {
+		return nil, err
+	}
+
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		// Make sure to set keep alive so that the connection doesn't die
+		tcpConn.SetKeepAlive(true)
+	}
+
+	client, err := packrpc.NewClient(conn)
+	if err != nil {
+		conn.Close()
 		return nil, err
 	}
 

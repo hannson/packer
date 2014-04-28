@@ -1,24 +1,24 @@
 package rpc
 
 import (
-	"cgl.tideland.biz/asserts"
 	"errors"
 	"github.com/mitchellh/packer/packer"
-	"net/rpc"
+	"reflect"
 	"testing"
 )
 
-var testBuildArtifact = &testArtifact{}
+var testBuildArtifact = &packer.MockArtifact{}
 
 type testBuild struct {
-	nameCalled     bool
-	prepareCalled  bool
-	runCalled      bool
-	runCache       packer.Cache
-	runUi          packer.Ui
-	setDebugCalled bool
-	setForceCalled bool
-	cancelCalled   bool
+	nameCalled      bool
+	prepareCalled   bool
+	prepareWarnings []string
+	runCalled       bool
+	runCache        packer.Cache
+	runUi           packer.Ui
+	setDebugCalled  bool
+	setForceCalled  bool
+	cancelCalled    bool
 
 	errRunResult bool
 }
@@ -28,9 +28,9 @@ func (b *testBuild) Name() string {
 	return "name"
 }
 
-func (b *testBuild) Prepare() error {
+func (b *testBuild) Prepare() ([]string, error) {
 	b.prepareCalled = true
-	return nil
+	return b.prepareWarnings, nil
 }
 
 func (b *testBuild) Run(ui packer.Ui, cache packer.Cache) ([]packer.Artifact, error) {
@@ -57,72 +57,92 @@ func (b *testBuild) Cancel() {
 	b.cancelCalled = true
 }
 
-func TestBuildRPC(t *testing.T) {
-	assert := asserts.NewTestingAsserts(t, true)
-
-	// Create the interface to test
+func TestBuild(t *testing.T) {
 	b := new(testBuild)
-
-	// Start the server
-	server := rpc.NewServer()
-	RegisterBuild(server, b)
-	address := serveSingleConn(server)
-
-	// Create the client over RPC and run some methods to verify it works
-	client, err := rpc.Dial("tcp", address)
-	assert.Nil(err, "should be able to connect")
-	bClient := Build(client)
+	client, server := testClientServer(t)
+	defer client.Close()
+	defer server.Close()
+	server.RegisterBuild(b)
+	bClient := client.Build()
 
 	// Test Name
 	bClient.Name()
-	assert.True(b.nameCalled, "name should be called")
+	if !b.nameCalled {
+		t.Fatal("name should be called")
+	}
 
 	// Test Prepare
 	bClient.Prepare()
-	assert.True(b.prepareCalled, "prepare should be called")
+	if !b.prepareCalled {
+		t.Fatal("prepare should be called")
+	}
 
 	// Test Run
 	cache := new(testCache)
 	ui := new(testUi)
 	artifacts, err := bClient.Run(ui, cache)
-	assert.True(b.runCalled, "run should be called")
-	assert.Nil(err, "should not error")
-	assert.Equal(len(artifacts), 1, "should have one artifact")
-	assert.Equal(artifacts[0].BuilderId(), "bid", "should have proper builder id")
+	if !b.runCalled {
+		t.Fatal("run should be called")
+	}
 
-	// Test the UI given to run, which should be fully functional
-	if b.runCalled {
-		b.runCache.Lock("foo")
-		assert.True(cache.lockCalled, "lock should be called")
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
 
-		b.runUi.Say("format")
-		assert.True(ui.sayCalled, "say should be called")
-		assert.Equal(ui.sayMessage, "format", "message should be correct")
+	if len(artifacts) != 1 {
+		t.Fatalf("bad: %#v", artifacts)
+	}
+
+	if artifacts[0].BuilderId() != "bid" {
+		t.Fatalf("bad: %#v", artifacts)
 	}
 
 	// Test run with an error
 	b.errRunResult = true
 	_, err = bClient.Run(ui, cache)
-	assert.NotNil(err, "should not nil")
+	if err == nil {
+		t.Fatal("should error")
+	}
 
 	// Test SetDebug
 	bClient.SetDebug(true)
-	assert.True(b.setDebugCalled, "should be called")
+	if !b.setDebugCalled {
+		t.Fatal("should be called")
+	}
 
 	// Test SetForce
 	bClient.SetForce(true)
-	assert.True(b.setForceCalled, "should be called")
+	if !b.setForceCalled {
+		t.Fatal("should be called")
+	}
 
 	// Test Cancel
 	bClient.Cancel()
-	assert.True(b.cancelCalled, "cancel should be called")
+	if !b.cancelCalled {
+		t.Fatal("should be called")
+	}
+}
+
+func TestBuildPrepare_Warnings(t *testing.T) {
+	b := new(testBuild)
+	client, server := testClientServer(t)
+	defer client.Close()
+	defer server.Close()
+	server.RegisterBuild(b)
+	bClient := client.Build()
+
+	expected := []string{"foo"}
+	b.prepareWarnings = expected
+
+	warnings, err := bClient.Prepare()
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	if !reflect.DeepEqual(warnings, expected) {
+		t.Fatalf("bad: %#v", warnings)
+	}
 }
 
 func TestBuild_ImplementsBuild(t *testing.T) {
-	assert := asserts.NewTestingAsserts(t, true)
-
-	var realBuild packer.Build
-	b := Build(nil)
-
-	assert.Implementor(b, &realBuild, "should be a Build")
+	var _ packer.Build = new(build)
 }

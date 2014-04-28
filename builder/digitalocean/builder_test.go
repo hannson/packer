@@ -34,7 +34,10 @@ func TestBuilder_Prepare_BadType(t *testing.T) {
 		"api_key": []string{},
 	}
 
-	err := b.Prepare(c)
+	warnings, err := b.Prepare(c)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err == nil {
 		t.Fatalf("prepare should fail")
 	}
@@ -46,7 +49,10 @@ func TestBuilderPrepare_APIKey(t *testing.T) {
 
 	// Test good
 	config["api_key"] = "foo"
-	err := b.Prepare(config)
+	warnings, err := b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err != nil {
 		t.Fatalf("should not have error: %s", err)
 	}
@@ -58,7 +64,10 @@ func TestBuilderPrepare_APIKey(t *testing.T) {
 	// Test bad
 	delete(config, "api_key")
 	b = Builder{}
-	err = b.Prepare(config)
+	warnings, err = b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err == nil {
 		t.Fatal("should have error")
 	}
@@ -67,7 +76,10 @@ func TestBuilderPrepare_APIKey(t *testing.T) {
 	delete(config, "api_key")
 	os.Setenv("DIGITALOCEAN_API_KEY", "foo")
 	defer os.Setenv("DIGITALOCEAN_API_KEY", "")
-	err = b.Prepare(config)
+	warnings, err = b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err != nil {
 		t.Fatalf("should not have error: %s", err)
 	}
@@ -79,7 +91,10 @@ func TestBuilderPrepare_ClientID(t *testing.T) {
 
 	// Test good
 	config["client_id"] = "foo"
-	err := b.Prepare(config)
+	warnings, err := b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err != nil {
 		t.Fatalf("should not have error: %s", err)
 	}
@@ -91,7 +106,10 @@ func TestBuilderPrepare_ClientID(t *testing.T) {
 	// Test bad
 	delete(config, "client_id")
 	b = Builder{}
-	err = b.Prepare(config)
+	warnings, err = b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err == nil {
 		t.Fatal("should have error")
 	}
@@ -100,9 +118,27 @@ func TestBuilderPrepare_ClientID(t *testing.T) {
 	delete(config, "client_id")
 	os.Setenv("DIGITALOCEAN_CLIENT_ID", "foo")
 	defer os.Setenv("DIGITALOCEAN_CLIENT_ID", "")
-	err = b.Prepare(config)
+	warnings, err = b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err != nil {
 		t.Fatalf("should not have error: %s", err)
+	}
+}
+
+func TestBuilderPrepare_InvalidKey(t *testing.T) {
+	var b Builder
+	config := testConfig()
+
+	// Add a random key
+	config["i_should_not_be_valid"] = true
+	warnings, err := b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
+	if err == nil {
+		t.Fatal("should have error")
 	}
 }
 
@@ -111,7 +147,10 @@ func TestBuilderPrepare_RegionID(t *testing.T) {
 	config := testConfig()
 
 	// Test default
-	err := b.Prepare(config)
+	warnings, err := b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err != nil {
 		t.Fatalf("should not have error: %s", err)
 	}
@@ -123,7 +162,10 @@ func TestBuilderPrepare_RegionID(t *testing.T) {
 	// Test set
 	config["region_id"] = 2
 	b = Builder{}
-	err = b.Prepare(config)
+	warnings, err = b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err != nil {
 		t.Fatalf("should not have error: %s", err)
 	}
@@ -138,7 +180,10 @@ func TestBuilderPrepare_SizeID(t *testing.T) {
 	config := testConfig()
 
 	// Test default
-	err := b.Prepare(config)
+	warnings, err := b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err != nil {
 		t.Fatalf("should not have error: %s", err)
 	}
@@ -150,7 +195,10 @@ func TestBuilderPrepare_SizeID(t *testing.T) {
 	// Test set
 	config["size_id"] = 67
 	b = Builder{}
-	err = b.Prepare(config)
+	warnings, err = b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err != nil {
 		t.Fatalf("should not have error: %s", err)
 	}
@@ -165,7 +213,10 @@ func TestBuilderPrepare_ImageID(t *testing.T) {
 	config := testConfig()
 
 	// Test default
-	err := b.Prepare(config)
+	warnings, err := b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err != nil {
 		t.Fatalf("should not have error: %s", err)
 	}
@@ -177,7 +228,10 @@ func TestBuilderPrepare_ImageID(t *testing.T) {
 	// Test set
 	config["size_id"] = 2
 	b = Builder{}
-	err = b.Prepare(config)
+	warnings, err = b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err != nil {
 		t.Fatalf("should not have error: %s", err)
 	}
@@ -192,7 +246,10 @@ func TestBuilderPrepare_SSHUsername(t *testing.T) {
 	config := testConfig()
 
 	// Test default
-	err := b.Prepare(config)
+	warnings, err := b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err != nil {
 		t.Fatalf("should not have error: %s", err)
 	}
@@ -204,7 +261,10 @@ func TestBuilderPrepare_SSHUsername(t *testing.T) {
 	// Test set
 	config["ssh_username"] = "foo"
 	b = Builder{}
-	err = b.Prepare(config)
+	warnings, err = b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err != nil {
 		t.Fatalf("should not have error: %s", err)
 	}
@@ -219,7 +279,10 @@ func TestBuilderPrepare_SSHTimeout(t *testing.T) {
 	config := testConfig()
 
 	// Test default
-	err := b.Prepare(config)
+	warnings, err := b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err != nil {
 		t.Fatalf("should not have error: %s", err)
 	}
@@ -231,7 +294,10 @@ func TestBuilderPrepare_SSHTimeout(t *testing.T) {
 	// Test set
 	config["ssh_timeout"] = "30s"
 	b = Builder{}
-	err = b.Prepare(config)
+	warnings, err = b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err != nil {
 		t.Fatalf("should not have error: %s", err)
 	}
@@ -239,39 +305,10 @@ func TestBuilderPrepare_SSHTimeout(t *testing.T) {
 	// Test bad
 	config["ssh_timeout"] = "tubes"
 	b = Builder{}
-	err = b.Prepare(config)
-	if err == nil {
-		t.Fatal("should have error")
+	warnings, err = b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
 	}
-
-}
-
-func TestBuilderPrepare_EventDelay(t *testing.T) {
-	var b Builder
-	config := testConfig()
-
-	// Test default
-	err := b.Prepare(config)
-	if err != nil {
-		t.Fatalf("should not have error: %s", err)
-	}
-
-	if b.config.RawEventDelay != "5s" {
-		t.Errorf("invalid: %d", b.config.RawEventDelay)
-	}
-
-	// Test set
-	config["event_delay"] = "10s"
-	b = Builder{}
-	err = b.Prepare(config)
-	if err != nil {
-		t.Fatalf("should not have error: %s", err)
-	}
-
-	// Test bad
-	config["event_delay"] = "tubes"
-	b = Builder{}
-	err = b.Prepare(config)
 	if err == nil {
 		t.Fatal("should have error")
 	}
@@ -283,7 +320,10 @@ func TestBuilderPrepare_StateTimeout(t *testing.T) {
 	config := testConfig()
 
 	// Test default
-	err := b.Prepare(config)
+	warnings, err := b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err != nil {
 		t.Fatalf("should not have error: %s", err)
 	}
@@ -295,7 +335,10 @@ func TestBuilderPrepare_StateTimeout(t *testing.T) {
 	// Test set
 	config["state_timeout"] = "5m"
 	b = Builder{}
-	err = b.Prepare(config)
+	warnings, err = b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err != nil {
 		t.Fatalf("should not have error: %s", err)
 	}
@@ -303,11 +346,47 @@ func TestBuilderPrepare_StateTimeout(t *testing.T) {
 	// Test bad
 	config["state_timeout"] = "tubes"
 	b = Builder{}
-	err = b.Prepare(config)
+	warnings, err = b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err == nil {
 		t.Fatal("should have error")
 	}
 
+}
+
+func TestBuilderPrepare_PrivateNetworking(t *testing.T) {
+	var b Builder
+	config := testConfig()
+
+	// Test default
+	warnings, err := b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
+	if err != nil {
+		t.Fatalf("should not have error: %s", err)
+	}
+
+	if b.config.PrivateNetworking != false {
+		t.Errorf("invalid: %s", b.config.PrivateNetworking)
+	}
+
+	// Test set
+	config["private_networking"] = true
+	b = Builder{}
+	warnings, err = b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
+	if err != nil {
+		t.Fatalf("should not have error: %s", err)
+	}
+
+	if b.config.PrivateNetworking != true {
+		t.Errorf("invalid: %s", b.config.PrivateNetworking)
+	}
 }
 
 func TestBuilderPrepare_SnapshotName(t *testing.T) {
@@ -315,27 +394,36 @@ func TestBuilderPrepare_SnapshotName(t *testing.T) {
 	config := testConfig()
 
 	// Test default
-	err := b.Prepare(config)
+	warnings, err := b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err != nil {
 		t.Fatalf("should not have error: %s", err)
 	}
 
-	if b.config.RawSnapshotName != "packer-{{.CreateTime}}" {
-		t.Errorf("invalid: %d", b.config.RawSnapshotName)
+	if b.config.SnapshotName == "" {
+		t.Errorf("invalid: %s", b.config.SnapshotName)
 	}
 
 	// Test set
 	config["snapshot_name"] = "foobarbaz"
 	b = Builder{}
-	err = b.Prepare(config)
+	warnings, err = b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err != nil {
 		t.Fatalf("should not have error: %s", err)
 	}
 
 	// Test set with template
-	config["snapshot_name"] = "{{.CreateTime}}"
+	config["snapshot_name"] = "{{timestamp}}"
 	b = Builder{}
-	err = b.Prepare(config)
+	warnings, err = b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
 	if err != nil {
 		t.Fatalf("should not have error: %s", err)
 	}
@@ -343,6 +431,58 @@ func TestBuilderPrepare_SnapshotName(t *testing.T) {
 	_, err = strconv.ParseInt(b.config.SnapshotName, 0, 0)
 	if err != nil {
 		t.Fatalf("failed to parse int in template: %s", err)
+	}
+
+}
+
+func TestBuilderPrepare_DropletName(t *testing.T) {
+	var b Builder
+	config := testConfig()
+
+	// Test default
+	warnings, err := b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
+	if err != nil {
+		t.Fatalf("should not have error: %s", err)
+	}
+
+	if b.config.DropletName == "" {
+		t.Errorf("invalid: %s", b.config.DropletName)
+	}
+
+	// Test normal set
+	config["droplet_name"] = "foobar"
+	b = Builder{}
+	warnings, err = b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
+	if err != nil {
+		t.Fatalf("should not have error: %s", err)
+	}
+
+	// Test with template
+	config["droplet_name"] = "foobar-{{timestamp}}"
+	b = Builder{}
+	warnings, err = b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
+	if err != nil {
+		t.Fatalf("should not have error: %s", err)
+	}
+
+	// Test with bad template
+	config["droplet_name"] = "foobar-{{"
+	b = Builder{}
+	warnings, err = b.Prepare(config)
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
+	if err == nil {
+		t.Fatal("should have error")
 	}
 
 }

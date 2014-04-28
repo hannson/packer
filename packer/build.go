@@ -6,17 +6,28 @@ import (
 	"sync"
 )
 
-// This is the key in configurations that is set to the name of the
-// build.
-const BuildNameConfigKey = "packer_build_name"
+const (
+	// This is the key in configurations that is set to the name of the
+	// build.
+	BuildNameConfigKey = "packer_build_name"
 
-// This is the key in configurations that is set to "true" when Packer
-// debugging is enabled.
-const DebugConfigKey = "packer_debug"
+	// This is the key in the configuration that is set to the type
+	// of the builder that is run. This is useful for provisioners and
+	// such who want to make use of this.
+	BuilderTypeConfigKey = "packer_builder_type"
 
-// This is the key in configurations that is set to "true" when Packer
-// force build is enabled.
-const ForceConfigKey = "packer_force"
+	// This is the key in configurations that is set to "true" when Packer
+	// debugging is enabled.
+	DebugConfigKey = "packer_debug"
+
+	// This is the key in configurations that is set to "true" when Packer
+	// force build is enabled.
+	ForceConfigKey = "packer_force"
+
+	// This key contains a map[string]string of the user variables for
+	// template processing.
+	UserVariablesConfigKey = "packer_user_variables"
+)
 
 // A Build represents a single job within Packer that is responsible for
 // building some machine image artifact. Builds are meant to be parallelized.
@@ -27,8 +38,9 @@ type Build interface {
 	Name() string
 
 	// Prepare configures the various components of this build and reports
-	// any errors in doing so (such as syntax errors, validation errors, etc.)
-	Prepare() error
+	// any errors in doing so (such as syntax errors, validation errors, etc.).
+	// It also reports any warnings.
+	Prepare() ([]string, error)
 
 	// Run runs the actual builder, returning an artifact implementation
 	// of what is built. If anything goes wrong, an error is returned.
@@ -66,6 +78,7 @@ type coreBuild struct {
 	hooks          map[string][]Hook
 	postProcessors [][]coreBuildPostProcessor
 	provisioners   []coreBuildProvisioner
+	variables      map[string]string
 
 	debug         bool
 	force         bool
@@ -78,7 +91,7 @@ type coreBuild struct {
 type coreBuildPostProcessor struct {
 	processor         PostProcessor
 	processorType     string
-	config            interface{}
+	config            map[string]interface{}
 	keepInputArtifact bool
 }
 
@@ -95,8 +108,9 @@ func (b *coreBuild) Name() string {
 }
 
 // Prepare prepares the build by doing some initialization for the builder
-// and any hooks. This _must_ be called prior to Run.
-func (b *coreBuild) Prepare() (err error) {
+// and any hooks. This _must_ be called prior to Run. The parameter is the
+// overrides for the variables within the template (if any).
+func (b *coreBuild) Prepare() (warn []string, err error) {
 	b.l.Lock()
 	defer b.l.Unlock()
 
@@ -107,13 +121,15 @@ func (b *coreBuild) Prepare() (err error) {
 	b.prepareCalled = true
 
 	packerConfig := map[string]interface{}{
-		BuildNameConfigKey: b.name,
-		DebugConfigKey:     b.debug,
-		ForceConfigKey:     b.force,
+		BuildNameConfigKey:     b.name,
+		BuilderTypeConfigKey:   b.builderType,
+		DebugConfigKey:         b.debug,
+		ForceConfigKey:         b.force,
+		UserVariablesConfigKey: b.variables,
 	}
 
 	// Prepare the builder
-	err = b.builder.Prepare(b.builderConfig, packerConfig)
+	warn, err = b.builder.Prepare(b.builderConfig, packerConfig)
 	if err != nil {
 		log.Printf("Build '%s' prepare failure: %s\n", b.name, err)
 		return
@@ -167,17 +183,18 @@ func (b *coreBuild) Run(originalUi Ui, cache Cache) ([]Artifact, error) {
 			hooks[HookProvision] = make([]Hook, 0, 1)
 		}
 
-		hooks[HookProvision] = append(hooks[HookProvision], &ProvisionHook{provisioners})
+		hooks[HookProvision] = append(hooks[HookProvision], &ProvisionHook{
+			Provisioners: provisioners,
+		})
 	}
 
-	hook := &DispatchHook{hooks}
+	hook := &DispatchHook{Mapping: hooks}
 	artifacts := make([]Artifact, 0, 1)
 
-	// The builder just has a normal Ui, but prefixed
-	builderUi := &PrefixedUi{
-		fmt.Sprintf("==> %s", b.Name()),
-		fmt.Sprintf("    %s", b.Name()),
-		originalUi,
+	// The builder just has a normal Ui, but targetted
+	builderUi := &TargettedUi{
+		Target: b.Name(),
+		Ui:     originalUi,
 	}
 
 	log.Printf("Running builder: %s", b.builderType)
@@ -200,10 +217,9 @@ PostProcessorRunSeqLoop:
 	for _, ppSeq := range b.postProcessors {
 		priorArtifact := builderArtifact
 		for i, corePP := range ppSeq {
-			ppUi := &PrefixedUi{
-				fmt.Sprintf("==> %s (%s)", b.Name(), corePP.processorType),
-				fmt.Sprintf("    %s (%s)", b.Name(), corePP.processorType),
-				originalUi,
+			ppUi := &TargettedUi{
+				Target: fmt.Sprintf("%s (%s)", b.Name(), corePP.processorType),
+				Ui:     originalUi,
 			}
 
 			builderUi.Say(fmt.Sprintf("Running post-processor: %s", corePP.processorType))

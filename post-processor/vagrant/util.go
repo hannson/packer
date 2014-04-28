@@ -2,24 +2,16 @@ package vagrant
 
 import (
 	"archive/tar"
-	"bytes"
+	"compress/flate"
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"github.com/mitchellh/packer/packer"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
-	"text/template"
 )
-
-// OutputPathTemplate is the structure that is availalable within the
-// OutputPath variables.
-type OutputPathTemplate struct {
-	ArtifactId string
-	BuildName  string
-	Provider   string
-}
 
 // Copies a file by copying the contents of the file to another place.
 func CopyContents(dst, src string) error {
@@ -45,18 +37,34 @@ func CopyContents(dst, src string) error {
 // DirToBox takes the directory and compresses it into a Vagrant-compatible
 // box. This function does not perform checks to verify that dir is
 // actually a proper box. This is an expected precondition.
-func DirToBox(dst, dir string) error {
+func DirToBox(dst, dir string, ui packer.Ui, level int) error {
 	log.Printf("Turning dir into box: %s => %s", dir, dst)
+
+	// Make the containing directory, if it does not already exist
+	err := os.MkdirAll(filepath.Dir(dst), 0755)
+	if err != nil {
+		return err
+	}
+
 	dstF, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
 	defer dstF.Close()
 
-	gzipWriter := gzip.NewWriter(dstF)
-	defer gzipWriter.Close()
+	var dstWriter io.Writer = dstF
+	if level != flate.NoCompression {
+		log.Printf("Compressing with gzip compression level: %d", level)
+		gzipWriter, err := gzip.NewWriterLevel(dstWriter, level)
+		if err != nil {
+			return err
+		}
+		defer gzipWriter.Close()
 
-	tarWriter := tar.NewWriter(gzipWriter)
+		dstWriter = gzipWriter
+	}
+
+	tarWriter := tar.NewWriter(dstWriter)
 	defer tarWriter.Close()
 
 	// This is the walk func that tars each of the files in the dir
@@ -93,6 +101,10 @@ func DirToBox(dst, dir string) error {
 			return err
 		}
 
+		if ui != nil {
+			ui.Message(fmt.Sprintf("Compressing: %s", header.Name))
+		}
+
 		if err := tarWriter.WriteHeader(header); err != nil {
 			return err
 		}
@@ -106,26 +118,6 @@ func DirToBox(dst, dir string) error {
 
 	// Tar.gz everything up
 	return filepath.Walk(dir, tarWalk)
-}
-
-// ProcessOutputPath takes an output path template and executes it,
-// replacing variables with their respective values.
-func ProcessOutputPath(path string, buildName string, provider string, artifact packer.Artifact) (string, error) {
-	var buf bytes.Buffer
-
-	tplData := &OutputPathTemplate{
-		ArtifactId: artifact.Id(),
-		BuildName:  buildName,
-		Provider:   provider,
-	}
-
-	t, err := template.New("output").Parse(path)
-	if err != nil {
-		return "", err
-	}
-
-	err = t.Execute(&buf, tplData)
-	return buf.String(), err
 }
 
 // WriteMetadata writes the "metadata.json" file for a Vagrant box.

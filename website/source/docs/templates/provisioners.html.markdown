@@ -53,6 +53,30 @@ provisioner to run a local script within the machines:
 }
 </pre>
 
+## Run on Specific Builds
+
+You can use the `only` or `except` configurations to run a provisioner
+only with specific builds. These two configurations do what you expect:
+`only` will only run the provisioner on the specified builds and
+`except` will run the provisioner on anything other than the specified
+builds.
+
+An example of `only` being used is shown below, but the usage of `except`
+is effectively the same:
+
+<pre class="prettyprint">
+{
+  "type": "shell",
+  "script": "script.sh",
+  "only": ["virtualbox"]
+}
+</pre>
+
+The values within `only` or `except` are _build names_, not builder
+types. If you recall, build names by default are just their builder type,
+but if you specify a custom `name` parameter, then you should use that
+as the value instead of the type.
+
 ## Build-Specific Overrides
 
 While the goal of Packer is to produce identical machine images, it
@@ -88,3 +112,26 @@ JSON object where the key is the name of a [builder definition](/docs/templates/
 The value of this is in turn another JSON object. This JSON object simply
 contains the provisioner configuration as normal. This configuration is merged
 into the default provisioner configuration.
+
+## Pausing Before Running
+
+With certain provisioners it is sometimes desirable to pause for some period
+of time before running it. Specifically, in cases where a provisioner reboots
+the machine, you may want to wait for some period of time before starting
+the next provisioner.
+
+Every provisioner definition in a Packer template can take a special
+configuration `pause_before` that is the amount of time to pause before
+running that provisioner. By default, there is no pause. An example
+is shown below:
+
+<pre class="prettyprint">
+{
+  "type": "shell",
+  "script": "script.sh",
+  "pause_before": "10s"
+}
+</pre>
+
+For the above provisioner, Packer will wait 10 seconds before uploading
+and executing the shell script.

@@ -3,7 +3,10 @@ package packer
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"log"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -13,6 +16,9 @@ type Cache interface {
 	// Lock takes a key and returns the path where the file can be written to.
 	// Packer guarantees that no other process will write to this file while
 	// the lock is held.
+	//
+	// If the key has an extension (e.g., file.ext), the resulting path
+	// will have that extension as well.
 	//
 	// The cache will block and wait for the lock.
 	Lock(string) string
@@ -44,7 +50,7 @@ func (f *FileCache) Lock(key string) string {
 	rw := f.rwLock(hashKey)
 	rw.Lock()
 
-	return filepath.Join(f.CacheDir, hashKey)
+	return f.cachePath(key, hashKey)
 }
 
 func (f *FileCache) Unlock(key string) {
@@ -58,13 +64,36 @@ func (f *FileCache) RLock(key string) (string, bool) {
 	rw := f.rwLock(hashKey)
 	rw.RLock()
 
-	return filepath.Join(f.CacheDir, hashKey), true
+	return f.cachePath(key, hashKey), true
 }
 
 func (f *FileCache) RUnlock(key string) {
 	hashKey := f.hashKey(key)
 	rw := f.rwLock(hashKey)
 	rw.RUnlock()
+}
+
+func (f *FileCache) cachePath(key string, hashKey string) string {
+	if endIndex := strings.Index(key, "?"); endIndex > -1 {
+		key = key[:endIndex]
+	}
+
+	suffix := ""
+	dotIndex := strings.LastIndex(key, ".")
+	if dotIndex > -1 {
+		if slashIndex := strings.LastIndex(key, "/"); slashIndex <= dotIndex {
+			suffix = key[dotIndex:]
+		}
+	}
+
+	// Make the cache directory. We ignore errors here, but
+	// log them in case something happens.
+	if err := os.MkdirAll(f.CacheDir, 0755); err != nil {
+		log.Printf(
+			"[ERR] Error making cacheDir: %s %s", f.CacheDir, err)
+	}
+
+	return filepath.Join(f.CacheDir, hashKey+suffix)
 }
 
 func (f *FileCache) hashKey(key string) string {

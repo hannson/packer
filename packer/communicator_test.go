@@ -1,9 +1,46 @@
 package packer
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestRemoteCmd_StartWithUi(t *testing.T) {
+	data := "hello\nworld\nthere"
+
+	originalOutput := new(bytes.Buffer)
+	uiOutput := new(bytes.Buffer)
+
+	testComm := new(MockCommunicator)
+	testComm.StartStdout = data
+	testUi := &BasicUi{
+		Reader: new(bytes.Buffer),
+		Writer: uiOutput,
+	}
+
+	rc := &RemoteCmd{
+		Command: "test",
+		Stdout:  originalOutput,
+	}
+
+	err := rc.StartWithUi(testComm, testUi)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	rc.Wait()
+
+	expected := strings.TrimSpace(data)
+	if uiOutput.String() != expected+"\n" {
+		t.Fatalf("bad output: '%s'", uiOutput.String())
+	}
+
+	if originalOutput.String() != expected {
+		t.Fatalf("bad: %#v", originalOutput.String())
+	}
+}
 
 func TestRemoteCmd_Wait(t *testing.T) {
 	var cmd RemoteCmd
@@ -14,8 +51,7 @@ func TestRemoteCmd_Wait(t *testing.T) {
 		result <- true
 	}()
 
-	cmd.ExitStatus = 42
-	cmd.Exited = true
+	cmd.SetExited(42)
 
 	select {
 	case <-result:

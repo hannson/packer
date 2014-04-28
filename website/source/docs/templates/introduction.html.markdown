@@ -20,6 +20,10 @@ A template is a JSON object that has a set of keys configuring various
 components of Packer. The available keys within a template are listed below.
 Along with each key, it is noted whether it is required or not.
 
+* `description` (optional) is a string providing a description of what
+  the template does. This output is used only in the
+  [inspect command](/docs/command-line/inspect.html).
+
 * `builders` (_required_) is an array of one or more objects that defines
   the builders that will be used to create machine images for this template,
   and configures each of those builders. For more information on how to define
@@ -33,11 +37,17 @@ Along with each key, it is noted whether it is required or not.
   information on how to define and configure a provisioner, read the
   sub-section on [configuring provisioners in templates](/docs/templates/provisioners.html).
 
-* `post-processors` (optional) is an array of one or more objects that defines the 
+* `post-processors` (optional) is an array of one or more objects that defines the
   various post-processing steps to take with the built images. This is an optional
   field. If not specified, then no post-processing will be done. For more
   information on what post-processors do and how they're defined, read the
   sub-section on [configuring post-processors in templates](/docs/templates/post-processors.html).
+
+* `min_packer_version` (optional) is a string that has a minimum Packer
+  version that is required to parse the template. This can be used to
+  ensure that proper versions of Packer are used with the template. A
+  max version can't be specified because Packer retains backwards
+  compatibility with `packer fix`.
 
 ## Example Template
 
@@ -56,7 +66,7 @@ missing valid AWS access keys. Otherwise, it would work properly with
       "source_ami": "ami-de0d9eb7",
       "instance_type": "t1.micro",
       "ssh_username": "ubuntu",
-      "ami_name": "packer {{.CreateTime}}"
+      "ami_name": "packer {{timestamp}}"
     }
   ],
 

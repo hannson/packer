@@ -2,9 +2,16 @@ package packer
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
+	"github.com/hashicorp/go-version"
 	"github.com/mitchellh/mapstructure"
+	jsonutil "github.com/mitchellh/packer/common/json"
+	"io"
+	"io/ioutil"
+	"os"
+	"sort"
+	"text/template"
+	"time"
 )
 
 // The rawTemplate struct represents the structure of a template read
@@ -12,49 +19,70 @@ import (
 // "interface{}" pointers since we actually don't know what their contents
 // are until we read the "type" field.
 type rawTemplate struct {
+	MinimumPackerVersion string `mapstructure:"min_packer_version"`
+
+	Description    string
 	Builders       []map[string]interface{}
 	Hooks          map[string][]string
+	PostProcessors []interface{} `mapstructure:"post-processors"`
 	Provisioners   []map[string]interface{}
-	PostProcessors []interface{} `json:"post-processors"`
+	Variables      map[string]interface{}
 }
 
 // The Template struct represents a parsed template, parsed into the most
 // completed form it can be without additional processing by the caller.
 type Template struct {
-	Builders       map[string]rawBuilderConfig
+	Description    string
+	Variables      map[string]RawVariable
+	Builders       map[string]RawBuilderConfig
 	Hooks          map[string][]string
-	PostProcessors [][]rawPostProcessorConfig
-	Provisioners   []rawProvisionerConfig
+	PostProcessors [][]RawPostProcessorConfig
+	Provisioners   []RawProvisionerConfig
 }
 
-// The rawBuilderConfig struct represents a raw, unprocessed builder
+// The RawBuilderConfig struct represents a raw, unprocessed builder
 // configuration. It contains the name of the builder as well as the
 // raw configuration. If requested, this is used to compile into a full
 // builder configuration at some point.
-type rawBuilderConfig struct {
+type RawBuilderConfig struct {
 	Name string
 	Type string
 
-	rawConfig interface{}
+	RawConfig interface{}
 }
 
-// rawPostProcessorConfig represents a raw, unprocessed post-processor
+// RawPostProcessorConfig represents a raw, unprocessed post-processor
 // configuration. It contains the type of the post processor as well as the
 // raw configuration that is handed to the post-processor for it to process.
-type rawPostProcessorConfig struct {
+type RawPostProcessorConfig struct {
+	TemplateOnlyExcept `mapstructure:",squash"`
+
 	Type              string
 	KeepInputArtifact bool `mapstructure:"keep_input_artifact"`
-	rawConfig         interface{}
+	RawConfig         map[string]interface{}
 }
 
-// rawProvisionerConfig represents a raw, unprocessed provisioner configuration.
+// RawProvisionerConfig represents a raw, unprocessed provisioner configuration.
 // It contains the type of the provisioner as well as the raw configuration
 // that is handed to the provisioner for it to process.
-type rawProvisionerConfig struct {
-	Type     string
-	Override map[string]interface{}
+type RawProvisionerConfig struct {
+	TemplateOnlyExcept `mapstructure:",squash"`
 
-	rawConfig interface{}
+	Type           string
+	Override       map[string]interface{}
+	RawPauseBefore string `mapstructure:"pause_before"`
+
+	RawConfig interface{}
+
+	pauseBefore time.Duration
+}
+
+// RawVariable represents a variable configuration within a template.
+type RawVariable struct {
+	Default  string // The default value for this variable
+	Required bool   // If the variable is required or not
+	Value    string // The set value for this variable
+	HasValue bool   // True if the value was set
 }
 
 // ParseTemplate takes a byte slice and parses a Template from it, returning
@@ -62,47 +90,108 @@ type rawProvisionerConfig struct {
 // could potentially be a MultiError, representing multiple errors. Knowing
 // and checking for this can be useful, if you wish to format it in a certain
 // way.
-func ParseTemplate(data []byte) (t *Template, err error) {
-	var rawTpl rawTemplate
-	err = json.Unmarshal(data, &rawTpl)
+//
+// The second parameter, vars, are the values for a set of user variables.
+func ParseTemplate(data []byte, vars map[string]string) (t *Template, err error) {
+	var rawTplInterface interface{}
+	err = jsonutil.Unmarshal(data, &rawTplInterface)
 	if err != nil {
-		syntaxErr, ok := err.(*json.SyntaxError)
-		if !ok {
-			return
-		}
-
-		// We have a syntax error. Extract out the line number and friends.
-		// https://groups.google.com/forum/#!topic/golang-nuts/fizimmXtVfc
-		newline := []byte{'\x0a'}
-
-		// Calculate the start/end position of the line where the error is
-		start := bytes.LastIndex(data[:syntaxErr.Offset], newline) + 1
-		end := len(data)
-		if idx := bytes.Index(data[start:], newline); idx >= 0 {
-			end = start + idx
-		}
-
-		// Count the line number we're on plus the offset in the line
-		line := bytes.Count(data[:start], newline) + 1
-		pos := int(syntaxErr.Offset) - start - 1
-
-		err = fmt.Errorf("Error in line %d, char %d: %s\n%s",
-			line, pos, syntaxErr, data[start:end])
-
 		return
 	}
 
-	t = &Template{}
-	t.Builders = make(map[string]rawBuilderConfig)
-	t.Hooks = rawTpl.Hooks
-	t.PostProcessors = make([][]rawPostProcessorConfig, len(rawTpl.PostProcessors))
-	t.Provisioners = make([]rawProvisionerConfig, len(rawTpl.Provisioners))
+	// Decode the raw template interface into the actual rawTemplate
+	// structure, checking for any extranneous keys along the way.
+	var md mapstructure.Metadata
+	var rawTpl rawTemplate
+	decoderConfig := &mapstructure.DecoderConfig{
+		Metadata: &md,
+		Result:   &rawTpl,
+	}
+
+	decoder, err := mapstructure.NewDecoder(decoderConfig)
+	if err != nil {
+		return
+	}
+
+	err = decoder.Decode(rawTplInterface)
+	if err != nil {
+		return
+	}
+
+	if rawTpl.MinimumPackerVersion != "" {
+		vCur, err := version.NewVersion(Version)
+		if err != nil {
+			panic(err)
+		}
+		vReq, err := version.NewVersion(rawTpl.MinimumPackerVersion)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"'minimum_packer_version' error: %s", err)
+		}
+
+		if vCur.LessThan(vReq) {
+			return nil, fmt.Errorf(
+				"Template requires Packer version %s. " +
+				"Running version is %s.",
+				vReq, vCur)
+		}
+	}
 
 	errors := make([]error, 0)
 
+	if len(md.Unused) > 0 {
+		sort.Strings(md.Unused)
+		for _, unused := range md.Unused {
+			errors = append(
+				errors, fmt.Errorf("Unknown root level key in template: '%s'", unused))
+		}
+	}
+
+	t = &Template{}
+	t.Description = rawTpl.Description
+	t.Variables = make(map[string]RawVariable)
+	t.Builders = make(map[string]RawBuilderConfig)
+	t.Hooks = rawTpl.Hooks
+	t.PostProcessors = make([][]RawPostProcessorConfig, len(rawTpl.PostProcessors))
+	t.Provisioners = make([]RawProvisionerConfig, len(rawTpl.Provisioners))
+
+	// Gather all the variables
+	for k, v := range rawTpl.Variables {
+		var variable RawVariable
+		variable.Required = v == nil
+
+		// Create a new mapstructure decoder in order to decode the default
+		// value since this is the only value in the regular template that
+		// can be weakly typed.
+		decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+			Result:           &variable.Default,
+			WeaklyTypedInput: true,
+		})
+		if err != nil {
+			// This should never happen.
+			panic(err)
+		}
+
+		err = decoder.Decode(v)
+		if err != nil {
+			errors = append(errors,
+				fmt.Errorf("Error decoding default value for user var '%s': %s", k, err))
+			continue
+		}
+
+		// Set the value of this variable if we have it
+		if val, ok := vars[k]; ok {
+			variable.HasValue = true
+			variable.Value = val
+			delete(vars, k)
+		}
+
+		t.Variables[k] = variable
+	}
+
 	// Gather all the builders
 	for i, v := range rawTpl.Builders {
-		var raw rawBuilderConfig
+		var raw RawBuilderConfig
 		if err := mapstructure.Decode(v, &raw); err != nil {
 			if merr, ok := err.(*mapstructure.Error); ok {
 				for _, err := range merr.Errors {
@@ -133,7 +222,11 @@ func ParseTemplate(data []byte) (t *Template, err error) {
 			continue
 		}
 
-		raw.rawConfig = v
+		// Now that we have the name, remove it from the config - as the builder
+		// itself doesn't know about, and it will cause a validation error.
+		delete(v, "name")
+
+		raw.RawConfig = v
 
 		t.Builders[raw.Name] = raw
 	}
@@ -142,35 +235,56 @@ func ParseTemplate(data []byte) (t *Template, err error) {
 	// are actually three different formats that the user can use to define
 	// a post-processor.
 	for i, rawV := range rawTpl.PostProcessors {
-		rawPP, err := parsePostProvisioner(i, rawV)
+		rawPP, err := parsePostProcessor(i, rawV)
 		if err != nil {
 			errors = append(errors, err...)
 			continue
 		}
 
-		t.PostProcessors[i] = make([]rawPostProcessorConfig, len(rawPP))
-		configs := t.PostProcessors[i]
+		configs := make([]RawPostProcessorConfig, 0, len(rawPP))
 		for j, pp := range rawPP {
-			config := &configs[j]
-			if err := mapstructure.Decode(pp, config); err != nil {
+			var config RawPostProcessorConfig
+			if err := mapstructure.Decode(pp, &config); err != nil {
 				if merr, ok := err.(*mapstructure.Error); ok {
 					for _, err := range merr.Errors {
-						errors = append(errors, fmt.Errorf("Post-processor #%d.%d: %s", i+1, j+1, err))
+						errors = append(errors,
+							fmt.Errorf("Post-processor #%d.%d: %s", i+1, j+1, err))
 					}
 				} else {
-					errors = append(errors, fmt.Errorf("Post-processor %d.%d: %s", i+1, j+1, err))
+					errors = append(errors,
+						fmt.Errorf("Post-processor %d.%d: %s", i+1, j+1, err))
 				}
 
 				continue
 			}
 
 			if config.Type == "" {
-				errors = append(errors, fmt.Errorf("Post-processor %d.%d: missing 'type'", i+1, j+1))
+				errors = append(errors,
+					fmt.Errorf("Post-processor %d.%d: missing 'type'", i+1, j+1))
 				continue
 			}
 
-			config.rawConfig = pp
+			// Remove the input keep_input_artifact option
+			config.TemplateOnlyExcept.Prune(pp)
+			delete(pp, "keep_input_artifact")
+
+			// Verify that the only settings are good
+			if errs := config.TemplateOnlyExcept.Validate(t.Builders); len(errs) > 0 {
+				for _, err := range errs {
+					errors = append(errors,
+						fmt.Errorf("Post-processor %d.%d: %s", i+1, j+1, err))
+				}
+
+				continue
+			}
+
+			config.RawConfig = pp
+
+			// Add it to the list of configs
+			configs = append(configs, config)
 		}
+
+		t.PostProcessors[i] = configs
 	}
 
 	// Gather all the provisioners
@@ -193,23 +307,91 @@ func ParseTemplate(data []byte) (t *Template, err error) {
 			continue
 		}
 
-		raw.rawConfig = v
+		// Delete the keys that we used
+		raw.TemplateOnlyExcept.Prune(v)
+		delete(v, "override")
+
+		// Verify that the override keys exist...
+		for name, _ := range raw.Override {
+			if _, ok := t.Builders[name]; !ok {
+				errors = append(
+					errors, fmt.Errorf("provisioner %d: build '%s' not found for override", i+1, name))
+			}
+		}
+
+		// Verify that the only settings are good
+		if errs := raw.TemplateOnlyExcept.Validate(t.Builders); len(errs) > 0 {
+			for _, err := range errs {
+				errors = append(errors,
+					fmt.Errorf("provisioner %d: %s", i+1, err))
+			}
+		}
+
+		// Setup the pause settings
+		if raw.RawPauseBefore != "" {
+			duration, err := time.ParseDuration(raw.RawPauseBefore)
+			if err != nil {
+				errors = append(
+					errors, fmt.Errorf(
+						"provisioner %d: pause_before invalid: %s",
+						i+1, err))
+			}
+
+			raw.pauseBefore = duration
+		}
+
+		// Remove the pause_before setting if it is there so that we don't
+		// get template validation errors later.
+		delete(v, "pause_before")
+
+		raw.RawConfig = v
 	}
 
 	if len(t.Builders) == 0 {
 		errors = append(errors, fmt.Errorf("No builders are defined in the template."))
 	}
 
+	// Verify that all the variable sets were for real variables.
+	for k, _ := range vars {
+		errors = append(errors, fmt.Errorf("Unknown user variables: %s", k))
+	}
+
 	// If there were errors, we put it into a MultiError and return
 	if len(errors) > 0 {
 		err = &MultiError{errors}
+		t = nil
 		return
 	}
 
 	return
 }
 
-func parsePostProvisioner(i int, rawV interface{}) (result []map[string]interface{}, errors []error) {
+// ParseTemplateFile takes the given template file and parses it into
+// a single template.
+func ParseTemplateFile(path string, vars map[string]string) (*Template, error) {
+	var data []byte
+
+	if path == "-" {
+		// Read from stdin...
+		buf := new(bytes.Buffer)
+		_, err := io.Copy(buf, os.Stdin)
+		if err != nil {
+			return nil, err
+		}
+
+		data = buf.Bytes()
+	} else {
+		var err error
+		data, err = ioutil.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return ParseTemplate(data, vars)
+}
+
+func parsePostProcessor(i int, rawV interface{}) (result []map[string]interface{}, errors []error) {
 	switch v := rawV.(type) {
 	case string:
 		result = []map[string]interface{}{
@@ -291,6 +473,57 @@ func (t *Template) Build(name string, components *ComponentFinder) (b Build, err
 		return
 	}
 
+	// Prepare the variable template processor, which is a bit unique
+	// because we don't allow user variable usage and we add a function
+	// to read from the environment.
+	varTpl, err := NewConfigTemplate()
+	if err != nil {
+		return nil, err
+	}
+	varTpl.Funcs(template.FuncMap{
+		"env":  templateEnv,
+		"user": templateDisableUser,
+	})
+
+	// Prepare the variables
+	var varErrors []error
+	variables := make(map[string]string)
+	for k, v := range t.Variables {
+		if v.Required && !v.HasValue {
+			varErrors = append(varErrors,
+				fmt.Errorf("Required user variable '%s' not set", k))
+		}
+
+		var val string
+		if v.HasValue {
+			val = v.Value
+		} else {
+			val, err = varTpl.Process(v.Default, nil)
+			if err != nil {
+				varErrors = append(varErrors,
+					fmt.Errorf("Error processing user variable '%s': %s'", k, err))
+			}
+		}
+
+		variables[k] = val
+	}
+
+	if len(varErrors) > 0 {
+		return nil, &MultiError{varErrors}
+	}
+
+	// Process the name
+	tpl, err := NewConfigTemplate()
+	if err != nil {
+		return nil, err
+	}
+	tpl.UserVars = variables
+
+	name, err = tpl.Process(name, nil)
+	if err != nil {
+		return nil, err
+	}
+
 	// Gather the Hooks
 	hooks := make(map[string][]Hook)
 	for tplEvent, tplHooks := range t.Hooks {
@@ -317,8 +550,12 @@ func (t *Template) Build(name string, components *ComponentFinder) (b Build, err
 	// Prepare the post-processors
 	postProcessors := make([][]coreBuildPostProcessor, 0, len(t.PostProcessors))
 	for _, rawPPs := range t.PostProcessors {
-		current := make([]coreBuildPostProcessor, len(rawPPs))
-		for i, rawPP := range rawPPs {
+		current := make([]coreBuildPostProcessor, 0, len(rawPPs))
+		for _, rawPP := range rawPPs {
+			if rawPP.TemplateOnlyExcept.Skip(name) {
+				continue
+			}
+
 			pp, err := components.PostProcessor(rawPP.Type)
 			if err != nil {
 				return nil, err
@@ -328,12 +565,18 @@ func (t *Template) Build(name string, components *ComponentFinder) (b Build, err
 				return nil, fmt.Errorf("PostProcessor type not found: %s", rawPP.Type)
 			}
 
-			current[i] = coreBuildPostProcessor{
+			current = append(current, coreBuildPostProcessor{
 				processor:         pp,
 				processorType:     rawPP.Type,
-				config:            rawPP.rawConfig,
+				config:            rawPP.RawConfig,
 				keepInputArtifact: rawPP.KeepInputArtifact,
-			}
+			})
+		}
+
+		// If we have no post-processors in this chain, just continue.
+		// This can happen if the post-processors skip certain builds.
+		if len(current) == 0 {
+			continue
 		}
 
 		postProcessors = append(postProcessors, current)
@@ -342,6 +585,10 @@ func (t *Template) Build(name string, components *ComponentFinder) (b Build, err
 	// Prepare the provisioners
 	provisioners := make([]coreBuildProvisioner, 0, len(t.Provisioners))
 	for _, rawProvisioner := range t.Provisioners {
+		if rawProvisioner.TemplateOnlyExcept.Skip(name) {
+			continue
+		}
+
 		var provisioner Provisioner
 		provisioner, err = components.Provisioner(rawProvisioner.Type)
 		if err != nil {
@@ -354,11 +601,18 @@ func (t *Template) Build(name string, components *ComponentFinder) (b Build, err
 		}
 
 		configs := make([]interface{}, 1, 2)
-		configs[0] = rawProvisioner.rawConfig
+		configs[0] = rawProvisioner.RawConfig
 
 		if rawProvisioner.Override != nil {
 			if override, ok := rawProvisioner.Override[name]; ok {
 				configs = append(configs, override)
+			}
+		}
+
+		if rawProvisioner.pauseBefore > 0 {
+			provisioner = &PausedProvisioner{
+				PauseBefore: rawProvisioner.pauseBefore,
+				Provisioner: provisioner,
 			}
 		}
 
@@ -369,11 +623,78 @@ func (t *Template) Build(name string, components *ComponentFinder) (b Build, err
 	b = &coreBuild{
 		name:           name,
 		builder:        builder,
-		builderConfig:  builderConfig.rawConfig,
+		builderConfig:  builderConfig.RawConfig,
 		builderType:    builderConfig.Type,
 		hooks:          hooks,
 		postProcessors: postProcessors,
 		provisioners:   provisioners,
+		variables:      variables,
+	}
+
+	return
+}
+
+// TemplateOnlyExcept contains the logic required for "only" and "except"
+// meta-parameters.
+type TemplateOnlyExcept struct {
+	Only   []string
+	Except []string
+}
+
+// Prune will prune out the used values from the raw map.
+func (t *TemplateOnlyExcept) Prune(raw map[string]interface{}) {
+	delete(raw, "except")
+	delete(raw, "only")
+}
+
+// Skip tests if we should skip putting this item onto a build.
+func (t *TemplateOnlyExcept) Skip(name string) bool {
+	if len(t.Only) > 0 {
+		onlyFound := false
+		for _, n := range t.Only {
+			if n == name {
+				onlyFound = true
+				break
+			}
+		}
+
+		if !onlyFound {
+			// Skip this provisioner
+			return true
+		}
+	}
+
+	// If the name is in the except list, then skip that
+	for _, n := range t.Except {
+		if n == name {
+			return true
+		}
+	}
+
+	return false
+}
+
+// Validates the only/except parameters.
+func (t *TemplateOnlyExcept) Validate(b map[string]RawBuilderConfig) (e []error) {
+	if len(t.Only) > 0 && len(t.Except) > 0 {
+		e = append(e,
+			fmt.Errorf("Only one of 'only' or 'except' may be specified."))
+	}
+
+	if len(t.Only) > 0 {
+		for _, n := range t.Only {
+			if _, ok := b[n]; !ok {
+				e = append(e,
+					fmt.Errorf("'only' specified builder '%s' not found", n))
+			}
+		}
+	}
+
+	for _, n := range t.Except {
+		if _, ok := b[n]; !ok {
+			e = append(e,
+				fmt.Errorf("'except' specified builder '%s' not found", n))
+		}
 	}
 
 	return

@@ -9,20 +9,19 @@ import (
 // over an RPC connection.
 type build struct {
 	client *rpc.Client
+	mux    *MuxConn
 }
 
 // BuildServer wraps a packer.Build implementation and makes it exportable
 // as part of a Golang RPC server.
 type BuildServer struct {
 	build packer.Build
+	mux   *MuxConn
 }
 
-type BuildRunArgs struct {
-	UiRPCAddress string
-}
-
-func Build(client *rpc.Client) *build {
-	return &build{client}
+type BuildPrepareResponse struct {
+	Warnings []string
+	Error    error
 }
 
 func (b *build) Name() (result string) {
@@ -30,34 +29,35 @@ func (b *build) Name() (result string) {
 	return
 }
 
-func (b *build) Prepare() (err error) {
-	if cerr := b.client.Call("Build.Prepare", new(interface{}), &err); cerr != nil {
-		return cerr
+func (b *build) Prepare() ([]string, error) {
+	var resp BuildPrepareResponse
+	if cerr := b.client.Call("Build.Prepare", new(interface{}), &resp); cerr != nil {
+		return nil, cerr
 	}
 
-	return
+	return resp.Warnings, resp.Error
 }
 
 func (b *build) Run(ui packer.Ui, cache packer.Cache) ([]packer.Artifact, error) {
-	// Create and start the server for the UI
-	server := rpc.NewServer()
-	RegisterCache(server, cache)
-	RegisterUi(server, ui)
-	args := &BuildRunArgs{serveSingleConn(server)}
+	nextId := b.mux.NextId()
+	server := newServerWithMux(b.mux, nextId)
+	server.RegisterCache(cache)
+	server.RegisterUi(ui)
+	go server.Serve()
 
-	var result []string
-	if err := b.client.Call("Build.Run", args, &result); err != nil {
+	var result []uint32
+	if err := b.client.Call("Build.Run", nextId, &result); err != nil {
 		return nil, err
 	}
 
 	artifacts := make([]packer.Artifact, len(result))
-	for i, addr := range result {
-		client, err := rpc.Dial("tcp", addr)
+	for i, streamId := range result {
+		client, err := newClientWithMux(b.mux, streamId)
 		if err != nil {
 			return nil, err
 		}
 
-		artifacts[i] = Artifact(client)
+		artifacts[i] = client.Artifact()
 	}
 
 	return artifacts, nil
@@ -86,27 +86,35 @@ func (b *BuildServer) Name(args *interface{}, reply *string) error {
 	return nil
 }
 
-func (b *BuildServer) Prepare(args interface{}, reply *error) error {
-	*reply = b.build.Prepare()
+func (b *BuildServer) Prepare(args *interface{}, resp *BuildPrepareResponse) error {
+	warnings, err := b.build.Prepare()
+	*resp = BuildPrepareResponse{
+		Warnings: warnings,
+		Error:    err,
+	}
 	return nil
 }
 
-func (b *BuildServer) Run(args *BuildRunArgs, reply *[]string) error {
-	client, err := rpc.Dial("tcp", args.UiRPCAddress)
+func (b *BuildServer) Run(streamId uint32, reply *[]uint32) error {
+	client, err := newClientWithMux(b.mux, streamId)
 	if err != nil {
-		return err
+		return NewBasicError(err)
 	}
+	defer client.Close()
 
-	artifacts, err := b.build.Run(&Ui{client}, Cache(client))
+	artifacts, err := b.build.Run(client.Ui(), client.Cache())
 	if err != nil {
 		return NewBasicError(err)
 	}
 
-	*reply = make([]string, len(artifacts))
+	*reply = make([]uint32, len(artifacts))
 	for i, artifact := range artifacts {
-		server := rpc.NewServer()
-		RegisterArtifact(server, artifact)
-		(*reply)[i] = serveSingleConn(server)
+		streamId := b.mux.NextId()
+		server := newServerWithMux(b.mux, streamId)
+		server.RegisterArtifact(artifact)
+		go server.Serve()
+
+		(*reply)[i] = streamId
 	}
 
 	return nil

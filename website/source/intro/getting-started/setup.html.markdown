@@ -45,6 +45,8 @@ usage: packer [--version] [--help] <command> [<args>]
 
 Available commands are:
     build        build image(s) from template
+    fix           fixes templates from old versions of packer
+    inspect      see components of a template
     validate     check that a template is valid
 ```
 
@@ -53,3 +55,18 @@ environment variable was not setup properly. Please go back and ensure
 that your PATH variable contains the directory which has Packer installed.
 
 Otherwise, Packer is installed and you're ready to go!
+
+## Alternative Installation Methods
+
+While the binary packages is the only official method of installation, there
+are alternatives available.
+
+### Homebrew
+
+If you're using OS X and [Homebrew](http://brew.sh), you can install Packer by
+adding the `binary` tap:
+
+```
+$ brew tap homebrew/binary
+$ brew install packer
+```

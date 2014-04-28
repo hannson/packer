@@ -20,23 +20,43 @@ const defaultConfig = `
 
 	"builders": {
 		"amazon-ebs": "packer-builder-amazon-ebs",
+		"amazon-chroot": "packer-builder-amazon-chroot",
+		"amazon-instance": "packer-builder-amazon-instance",
 		"digitalocean": "packer-builder-digitalocean",
-		"virtualbox": "packer-builder-virtualbox",
-		"vmware": "packer-builder-vmware"
+		"docker": "packer-builder-docker",
+		"googlecompute": "packer-builder-googlecompute",
+		"openstack": "packer-builder-openstack",
+		"qemu": "packer-builder-qemu",
+		"virtualbox-iso": "packer-builder-virtualbox-iso",
+		"virtualbox-ovf": "packer-builder-virtualbox-ovf",
+		"vmware-iso": "packer-builder-vmware-iso",
+		"vmware-vmx": "packer-builder-vmware-vmx",
+		"null": "packer-builder-null"
 	},
 
 	"commands": {
 		"build": "packer-command-build",
+		"fix": "packer-command-fix",
+		"inspect": "packer-command-inspect",
 		"validate": "packer-command-validate"
 	},
 
 	"post-processors": {
-		"vagrant": "packer-post-processor-vagrant"
+		"vagrant": "packer-post-processor-vagrant",
+		"vsphere": "packer-post-processor-vsphere",
+		"docker-push": "packer-post-processor-docker-push",
+		"docker-import": "packer-post-processor-docker-import"
 	},
 
 	"provisioners": {
+		"ansible-local": "packer-provisioner-ansible-local",
+		"chef-client": "packer-provisioner-chef-client",
+		"chef-solo": "packer-provisioner-chef-solo",
 		"file": "packer-provisioner-file",
-		"shell": "packer-provisioner-shell"
+		"puppet-masterless": "packer-provisioner-puppet-masterless",
+		"puppet-server": "packer-provisioner-puppet-server",
+		"shell": "packer-provisioner-shell",
+		"salt-masterless": "packer-provisioner-salt-masterless"
 	}
 }
 `

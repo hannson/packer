@@ -1,9 +1,7 @@
 package rpc
 
 import (
-	"cgl.tideland.biz/asserts"
 	"github.com/mitchellh/packer/packer"
-	"net/rpc"
 	"testing"
 )
 
@@ -41,46 +39,54 @@ func (t *testCache) RUnlock(key string) {
 }
 
 func TestCache_Implements(t *testing.T) {
-	var raw interface{}
-	raw = Cache(nil)
-	if _, ok := raw.(packer.Cache); !ok {
-		t.Fatal("Cache must be a cache.")
-	}
+	var _ packer.Cache = new(cache)
 }
 
 func TestCacheRPC(t *testing.T) {
-	assert := asserts.NewTestingAsserts(t, true)
-
 	// Create the interface to test
 	c := new(testCache)
 
 	// Start the server
-	server := rpc.NewServer()
-	RegisterCache(server, c)
-	address := serveSingleConn(server)
+	client, server := testClientServer(t)
+	defer client.Close()
+	defer server.Close()
+	server.RegisterCache(c)
 
-	// Create the client over RPC and run some methods to verify it works
-	rpcClient, err := rpc.Dial("tcp", address)
-	assert.Nil(err, "should be able to connect")
-	client := Cache(rpcClient)
+	cacheClient := client.Cache()
 
 	// Test Lock
-	client.Lock("foo")
-	assert.True(c.lockCalled, "should be called")
-	assert.Equal(c.lockKey, "foo", "should have proper key")
+	cacheClient.Lock("foo")
+	if !c.lockCalled {
+		t.Fatal("should be called")
+	}
+	if c.lockKey != "foo" {
+		t.Fatalf("bad: %s", c.lockKey)
+	}
 
 	// Test Unlock
-	client.Unlock("foo")
-	assert.True(c.unlockCalled, "should be called")
-	assert.Equal(c.unlockKey, "foo", "should have proper key")
+	cacheClient.Unlock("foo")
+	if !c.unlockCalled {
+		t.Fatal("should be called")
+	}
+	if c.unlockKey != "foo" {
+		t.Fatalf("bad: %s", c.unlockKey)
+	}
 
 	// Test RLock
-	client.RLock("foo")
-	assert.True(c.rlockCalled, "should be called")
-	assert.Equal(c.rlockKey, "foo", "should have proper key")
+	cacheClient.RLock("foo")
+	if !c.rlockCalled {
+		t.Fatal("should be called")
+	}
+	if c.rlockKey != "foo" {
+		t.Fatalf("bad: %s", c.rlockKey)
+	}
 
 	// Test RUnlock
-	client.RUnlock("foo")
-	assert.True(c.runlockCalled, "should be called")
-	assert.Equal(c.runlockKey, "foo", "should have proper key")
+	cacheClient.RUnlock("foo")
+	if !c.runlockCalled {
+		t.Fatal("should be called")
+	}
+	if c.runlockKey != "foo" {
+		t.Fatalf("bad: %s", c.runlockKey)
+	}
 }

@@ -43,7 +43,7 @@ own.
     "source_ami": "ami-de0d9eb7",
     "instance_type": "t1.micro",
     "ssh_username": "ubuntu",
-    "ami_name": "packer-example {{.CreateTime}}"
+    "ami_name": "packer-example {{timestamp}}"
   }]
 }
 ```
@@ -70,12 +70,19 @@ http://www.packer.io/docs
 ## Developing Packer
 
 If you wish to work on Packer itself, you'll first need [Go](http://golang.org)
-installed (version 1.1+ is _required_). Make sure you have Go properly installed,
+installed (version 1.2+ is _required_). Make sure you have Go properly installed,
 including setting up your [GOPATH](http://golang.org/doc/code.html#GOPATH).
 
 For some additional dependencies, Go needs [Mercurial](http://mercurial.selenic.com/)
-to be installed. Packer itself doesn't require this but a dependency of a
-dependency does.
+and [Bazaar](http://bazaar.canonical.com/en/) to be installed.
+Packer itself doesn't require these, but a dependency of a dependency does.
+
+You'll also need [`gox`](https://github.com/mitchellh/gox)
+to compile packer. You can install that with:
+
+```
+$ go get -u github.com/mitchellh/gox
+```
 
 Next, clone this repository into `$GOPATH/src/github.com/mitchellh/packer` and
 then just type `make`. In a few moments, you'll have a working `packer` executable:
@@ -87,6 +94,15 @@ $ bin/packer
 ...
 ```
 
+If you need to cross-compile Packer for other platforms, take a look at
+`scripts/dist.sh`.
+
 You can run tests by typing `make test`.
 
 This will run tests for Packer core along with all the core builders and commands and such that come with Packer.
+
+If you make any changes to the code, run `make format` in order to automatically
+format the code according to Go standards.
+
+When new dependencies are added to packer you can use `make updatedeps` to
+get the latest and subsequently use `make` to compile and generate the `packer` binary.

@@ -2,6 +2,8 @@ package plugin
 
 import (
 	"fmt"
+	"github.com/mitchellh/packer/packer"
+	"log"
 	"os"
 	"os/exec"
 	"testing"
@@ -48,23 +50,73 @@ func TestHelperProcess(*testing.T) {
 
 	cmd, args := args[0], args[1:]
 	switch cmd {
+	case "bad-version":
+		fmt.Printf("%s1|tcp|:1234\n", APIVersion)
+		<-make(chan int)
 	case "builder":
-		ServeBuilder(new(helperBuilder))
+		server, err := Server()
+		if err != nil {
+			log.Printf("[ERR] %s", err)
+			os.Exit(1)
+		}
+		server.RegisterBuilder(new(packer.MockBuilder))
+		server.Serve()
 	case "command":
-		ServeCommand(new(helperCommand))
+		server, err := Server()
+		if err != nil {
+			log.Printf("[ERR] %s", err)
+			os.Exit(1)
+		}
+		server.RegisterCommand(new(helperCommand))
+		server.Serve()
 	case "hook":
-		ServeHook(new(helperHook))
+		server, err := Server()
+		if err != nil {
+			log.Printf("[ERR] %s", err)
+			os.Exit(1)
+		}
+		server.RegisterHook(new(packer.MockHook))
+		server.Serve()
 	case "invalid-rpc-address":
 		fmt.Println("lolinvalid")
 	case "mock":
-		fmt.Println(":1234")
+		fmt.Printf("%s|tcp|:1234\n", APIVersion)
 		<-make(chan int)
 	case "post-processor":
-		ServePostProcessor(new(helperPostProcessor))
+		server, err := Server()
+		if err != nil {
+			log.Printf("[ERR] %s", err)
+			os.Exit(1)
+		}
+		server.RegisterPostProcessor(new(helperPostProcessor))
+		server.Serve()
 	case "provisioner":
-		ServeProvisioner(new(helperProvisioner))
+		server, err := Server()
+		if err != nil {
+			log.Printf("[ERR] %s", err)
+			os.Exit(1)
+		}
+		server.RegisterProvisioner(new(packer.MockProvisioner))
+		server.Serve()
 	case "start-timeout":
 		time.Sleep(1 * time.Minute)
+		os.Exit(1)
+	case "stderr":
+		fmt.Printf("%s|tcp|:1234\n", APIVersion)
+		log.Println("HELLO")
+		log.Println("WORLD")
+	case "stdin":
+		fmt.Printf("%s|tcp|:1234\n", APIVersion)
+		data := make([]byte, 5)
+		if _, err := os.Stdin.Read(data); err != nil {
+			log.Printf("stdin read error: %s", err)
+			os.Exit(100)
+		}
+
+		if string(data) == "hello" {
+			os.Exit(0)
+		}
+
 		os.Exit(1)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %q\n", cmd)

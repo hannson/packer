@@ -3,8 +3,8 @@ package validate
 import (
 	"flag"
 	"fmt"
+	cmdcommon "github.com/mitchellh/packer/common/command"
 	"github.com/mitchellh/packer/packer"
-	"io/ioutil"
 	"log"
 	"strings"
 )
@@ -17,10 +17,12 @@ func (Command) Help() string {
 
 func (c Command) Run(env packer.Environment, args []string) int {
 	var cfgSyntaxOnly bool
+	buildOptions := new(cmdcommon.BuildOptions)
 
 	cmdFlags := flag.NewFlagSet("validate", flag.ContinueOnError)
 	cmdFlags.Usage = func() { env.Ui().Say(c.Help()) }
 	cmdFlags.BoolVar(&cfgSyntaxOnly, "syntax-only", false, "check syntax only")
+	cmdcommon.BuildOptionFlags(cmdFlags, buildOptions)
 	if err := cmdFlags.Parse(args); err != nil {
 		return 1
 	}
@@ -31,17 +33,24 @@ func (c Command) Run(env packer.Environment, args []string) int {
 		return 1
 	}
 
-	// Read the file into a byte array so that we can parse the template
-	log.Printf("Reading template: %s", args[0])
-	tplData, err := ioutil.ReadFile(args[0])
+	if err := buildOptions.Validate(); err != nil {
+		env.Ui().Error(err.Error())
+		env.Ui().Error("")
+		env.Ui().Error(c.Help())
+		return 1
+	}
+
+	userVars, err := buildOptions.AllUserVars()
 	if err != nil {
-		env.Ui().Error(fmt.Sprintf("Failed to read template file: %s", err))
+		env.Ui().Error(fmt.Sprintf("Error compiling user variables: %s", err))
+		env.Ui().Error("")
+		env.Ui().Error(c.Help())
 		return 1
 	}
 
 	// Parse the template into a machine-usable format
-	log.Println("Parsing template...")
-	tpl, err := packer.ParseTemplate(tplData)
+	log.Printf("Reading template: %s", args[0])
+	tpl, err := packer.ParseTemplateFile(args[0], userVars)
 	if err != nil {
 		env.Ui().Error(fmt.Sprintf("Failed to parse template: %s", err))
 		return 1
@@ -53,6 +62,7 @@ func (c Command) Run(env packer.Environment, args []string) int {
 	}
 
 	errs := make([]error, 0)
+	warnings := make(map[string][]string)
 
 	// The component finder for our builds
 	components := &packer.ComponentFinder{
@@ -63,23 +73,19 @@ func (c Command) Run(env packer.Environment, args []string) int {
 	}
 
 	// Otherwise, get all the builds
-	buildNames := tpl.BuildNames()
-	builds := make([]packer.Build, 0, len(buildNames))
-	for _, buildName := range buildNames {
-		log.Printf("Creating build from template for: %s", buildName)
-		build, err := tpl.Build(buildName, components)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("Build '%s': %s", buildName, err))
-			continue
-		}
-
-		builds = append(builds, build)
+	builds, err := buildOptions.Builds(tpl, components)
+	if err != nil {
+		env.Ui().Error(err.Error())
+		return 1
 	}
 
 	// Check the configuration of all builds
 	for _, b := range builds {
 		log.Printf("Preparing build: %s", b.Name())
-		err := b.Prepare()
+		warns, err := b.Prepare()
+		if len(warns) > 0 {
+			warnings[b.Name()] = warns
+		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("Errors validating build '%s'. %s", b.Name(), err))
 		}
@@ -96,6 +102,21 @@ func (c Command) Run(env packer.Environment, args []string) int {
 		}
 
 		return 1
+	}
+
+	if len(warnings) > 0 {
+		env.Ui().Say("Template validation succeeded, but there were some warnings.")
+		env.Ui().Say("These are ONLY WARNINGS, and Packer will attempt to build the")
+		env.Ui().Say("template despite them, but they should be paid attention to.\n")
+
+		for build, warns := range warnings {
+			env.Ui().Say(fmt.Sprintf("Warnings for build '%s':\n", build))
+			for _, warning := range warns {
+				env.Ui().Say(fmt.Sprintf("* %s", warning))
+			}
+		}
+
+		return 0
 	}
 
 	env.Ui().Say("Template validated successfully.")

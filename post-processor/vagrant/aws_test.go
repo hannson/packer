@@ -1,14 +1,17 @@
 package vagrant
 
 import (
-	"github.com/mitchellh/packer/packer"
 	"testing"
 )
 
-func TestAWSBoxPostProcessor_ImplementsPostProcessor(t *testing.T) {
-	var raw interface{}
-	raw = &AWSBoxPostProcessor{}
-	if _, ok := raw.(packer.PostProcessor); !ok {
-		t.Fatalf("AWS PostProcessor should be a PostProcessor")
+func TestAWSProvider_impl(t *testing.T) {
+	var _ Provider = new(AWSProvider)
+}
+
+func TestAWSProvider_KeepInputArtifact(t *testing.T) {
+	p := new(AWSProvider)
+
+	if !p.KeepInputArtifact() {
+		t.Fatal("should keep input artifact")
 	}
 }

@@ -1,120 +1,146 @@
 package rpc
 
 import (
-	"cgl.tideland.biz/asserts"
-	"errors"
 	"github.com/mitchellh/packer/packer"
-	"net/rpc"
+	"reflect"
 	"testing"
 )
 
-var testBuilderArtifact = &testArtifact{}
+var testBuilderArtifact = &packer.MockArtifact{}
 
-type testBuilder struct {
-	prepareCalled bool
-	prepareConfig []interface{}
-	runCalled     bool
-	runCache      packer.Cache
-	runHook       packer.Hook
-	runUi         packer.Ui
-	cancelCalled  bool
-
-	errRunResult bool
-	nilRunResult bool
-}
-
-func (b *testBuilder) Prepare(config ...interface{}) error {
-	b.prepareCalled = true
-	b.prepareConfig = config
-	return nil
-}
-
-func (b *testBuilder) Run(ui packer.Ui, hook packer.Hook, cache packer.Cache) (packer.Artifact, error) {
-	b.runCache = cache
-	b.runCalled = true
-	b.runHook = hook
-	b.runUi = ui
-
-	if b.errRunResult {
-		return nil, errors.New("foo")
-	} else if b.nilRunResult {
-		return nil, nil
-	} else {
-		return testBuilderArtifact, nil
-	}
-}
-
-func (b *testBuilder) Cancel() {
-	b.cancelCalled = true
-}
-
-func TestBuilderRPC(t *testing.T) {
-	assert := asserts.NewTestingAsserts(t, true)
-
-	// Create the interface to test
-	b := new(testBuilder)
-
-	// Start the server
-	server := rpc.NewServer()
-	RegisterBuilder(server, b)
-	address := serveSingleConn(server)
-
-	// Create the client over RPC and run some methods to verify it works
-	client, err := rpc.Dial("tcp", address)
-	assert.Nil(err, "should be able to connect")
+func TestBuilderPrepare(t *testing.T) {
+	b := new(packer.MockBuilder)
+	client, server := testClientServer(t)
+	defer client.Close()
+	defer server.Close()
+	server.RegisterBuilder(b)
+	bClient := client.Builder()
 
 	// Test Prepare
 	config := 42
-	bClient := Builder(client)
-	bClient.Prepare(config)
-	assert.True(b.prepareCalled, "prepare should be called")
-	assert.Equal(b.prepareConfig, []interface{}{42}, "prepare should be called with right arg")
+	warnings, err := bClient.Prepare(config)
+	if err != nil {
+		t.Fatalf("bad: %s", err)
+	}
+	if len(warnings) > 0 {
+		t.Fatalf("bad: %#v", warnings)
+	}
+
+	if !b.PrepareCalled {
+		t.Fatal("should be called")
+	}
+
+	expected := []interface{}{int64(42)}
+	if !reflect.DeepEqual(b.PrepareConfig, expected) {
+		t.Fatalf("bad: %#v != %#v", b.PrepareConfig, expected)
+	}
+}
+
+func TestBuilderPrepare_Warnings(t *testing.T) {
+	b := new(packer.MockBuilder)
+	client, server := testClientServer(t)
+	defer client.Close()
+	defer server.Close()
+	server.RegisterBuilder(b)
+	bClient := client.Builder()
+
+	expected := []string{"foo"}
+	b.PrepareWarnings = expected
+
+	// Test Prepare
+	warnings, err := bClient.Prepare(nil)
+	if err != nil {
+		t.Fatalf("bad: %s", err)
+	}
+	if !reflect.DeepEqual(warnings, expected) {
+		t.Fatalf("bad: %#v", warnings)
+	}
+}
+
+func TestBuilderRun(t *testing.T) {
+	b := new(packer.MockBuilder)
+	client, server := testClientServer(t)
+	defer client.Close()
+	defer server.Close()
+	server.RegisterBuilder(b)
+	bClient := client.Builder()
 
 	// Test Run
 	cache := new(testCache)
-	hook := &testHook{}
+	hook := &packer.MockHook{}
 	ui := &testUi{}
 	artifact, err := bClient.Run(ui, hook, cache)
-	assert.Nil(err, "should have no error")
-	assert.True(b.runCalled, "runs hould be called")
-
-	if b.runCalled {
-		b.runCache.Lock("foo")
-		assert.True(cache.lockCalled, "lock should be called")
-
-		b.runHook.Run("foo", nil, nil, nil)
-		assert.True(hook.runCalled, "run should be called")
-
-		b.runUi.Say("format")
-		assert.True(ui.sayCalled, "say should be called")
-		assert.Equal(ui.sayMessage, "format", "message should be correct")
-
-		assert.Equal(artifact.Id(), testBuilderArtifact.Id(), "should have artifact Id")
+	if err != nil {
+		t.Fatalf("err: %s", err)
 	}
 
-	// Test run with nil result
-	b.nilRunResult = true
-	artifact, err = bClient.Run(ui, hook, cache)
-	assert.Nil(artifact, "should be nil")
-	assert.Nil(err, "should have no error")
+	if !b.RunCalled {
+		t.Fatal("run should be called")
+	}
 
-	// Test with an error
-	b.errRunResult = true
-	b.nilRunResult = false
-	artifact, err = bClient.Run(ui, hook, cache)
-	assert.Nil(artifact, "should be nil")
-	assert.NotNil(err, "should have error")
+	if artifact.Id() != testBuilderArtifact.Id() {
+		t.Fatalf("bad: %s", artifact.Id())
+	}
+}
 
-	// Test Cancel
+func TestBuilderRun_nilResult(t *testing.T) {
+	b := new(packer.MockBuilder)
+	b.RunNilResult = true
+
+	client, server := testClientServer(t)
+	defer client.Close()
+	defer server.Close()
+	server.RegisterBuilder(b)
+	bClient := client.Builder()
+
+	cache := new(testCache)
+	hook := &packer.MockHook{}
+	ui := &testUi{}
+	artifact, err := bClient.Run(ui, hook, cache)
+	if artifact != nil {
+		t.Fatalf("bad: %#v", artifact)
+	}
+	if err != nil {
+		t.Fatalf("bad: %#v", err)
+	}
+}
+
+func TestBuilderRun_ErrResult(t *testing.T) {
+	b := new(packer.MockBuilder)
+	client, server := testClientServer(t)
+	defer client.Close()
+	defer server.Close()
+	server.RegisterBuilder(b)
+	bClient := client.Builder()
+
+	b.RunErrResult = true
+
+	cache := new(testCache)
+	hook := &packer.MockHook{}
+	ui := &testUi{}
+	artifact, err := bClient.Run(ui, hook, cache)
+	if artifact != nil {
+		t.Fatalf("bad: %#v", artifact)
+	}
+	if err == nil {
+		t.Fatal("should have error")
+	}
+}
+
+func TestBuilderCancel(t *testing.T) {
+	b := new(packer.MockBuilder)
+	client, server := testClientServer(t)
+	defer client.Close()
+	defer server.Close()
+	server.RegisterBuilder(b)
+	bClient := client.Builder()
+
 	bClient.Cancel()
-	assert.True(b.cancelCalled, "cancel should be called")
+	if !b.CancelCalled {
+		t.Fatal("cancel should be called")
+	}
 }
 
 func TestBuilder_ImplementsBuilder(t *testing.T) {
-	assert := asserts.NewTestingAsserts(t, true)
-
-	var realBuilder packer.Builder
-	b := Builder(nil)
-
-	assert.Implementor(b, &realBuilder, "should be a Builder")
+	var _ packer.Builder = new(builder)
 }

@@ -3,6 +3,7 @@ package packer
 import (
 	"io/ioutil"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -36,19 +37,39 @@ func TestFileCache(t *testing.T) {
 	defer os.RemoveAll(cacheDir)
 
 	cache := &FileCache{CacheDir: cacheDir}
-	path := cache.Lock("foo")
+
+	// Test path with no extension (GH-716)
+	path := cache.Lock("/foo.bar/baz")
+	defer cache.Unlock("/foo.bar/baz")
+	if strings.Contains(path, ".bar") {
+		t.Fatalf("bad: %s", path)
+	}
+
+	// Test paths with a ?
+	path = cache.Lock("foo.ext?foo=bar.foo")
+	defer cache.Unlock("foo.ext?foo=bar.foo")
+	if !strings.HasSuffix(path, ".ext") {
+		t.Fatalf("bad extension with question mark: %s", path)
+	}
+
+	// Test normal paths
+	path = cache.Lock("foo.iso")
+	if !strings.HasSuffix(path, ".iso") {
+		t.Fatalf("path doesn't end with suffix '%s': '%s'", ".iso", path)
+	}
+
 	err = ioutil.WriteFile(path, []byte("data"), 0666)
 	if err != nil {
 		t.Fatalf("error writing: %s", err)
 	}
 
-	cache.Unlock("foo")
+	cache.Unlock("foo.iso")
 
-	path, ok := cache.RLock("foo")
+	path, ok := cache.RLock("foo.iso")
 	if !ok {
 		t.Fatal("cache says key doesn't exist")
 	}
-	defer cache.RUnlock("foo")
+	defer cache.RUnlock("foo.iso")
 
 	data, err := ioutil.ReadFile(path)
 	if err != nil {

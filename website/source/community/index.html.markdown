@@ -48,5 +48,30 @@ list as contributors come and go.
 		</div>
 	</div>
 
+	<div class="person">
+		<img class="pull-left" src="http://www.gravatar.com/avatar/2f7fc9cb7558e3ea48f5a86fa90a78da.png?s=125">
+		<div class="bio">
+			<h3>Mark Peek (<a href="https://github.com/markpeek">@markpeek</a>)</h3>
+			<p>
+			In addition to Packer, Mark Peek helps maintain
+			various open source projects such as
+			<a href="https://github.com/cloudtools">cloudtools</a> and
+			<a href="https://github.com/ironport">IronPort Python libraries</a>.
+			Mark is also a <a href="https://FreeBSD.org">FreeBSD committer</a>.</p>
+		</div>
+	</div>
+
+	<div class="person">
+		<img class="pull-left" src="http://www.gravatar.com/avatar/1fca64df3d7db1e2f258a8956d2b0aff.png?s=125">
+		<div class="bio">
+			<h3>Ross Smith II (<a href="https://github.com/rasa" target="_blank">@rasa</a>)</h3>
+			<p>
+<a href="http://smithii.com/" target="_blank">Ross Smith</a> maintains our VMWare builder on Windows, and provides other valuable assistance.
+Ross is an open source enthusist, published author, and freelance consultant.</p>
+		</div>
+	</div>
+
+
+
 	<div class="clearfix"></div>
 </div>

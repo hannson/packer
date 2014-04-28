@@ -37,17 +37,26 @@ block below.
 
 <pre class="prettyprint">
 {
+  "variables": [...],
   "builders": [...],
 
   "provisioners": [{
     "type": "shell",
     "inline": [
+      "sleep 30",
       "sudo apt-get update",
       "sudo apt-get install -y redis-server"
     ]
   }]
 }
 </pre>
+
+<div class="alert alert-block alert-info">
+<strong>Note:</strong> The <code>sleep 30</code> in the example above is
+very important. Because Packer is able to detect and SSH into the instance
+as soon as SSH is available, Ubuntu actually doesn't get proper amounts
+of time to initialize. The sleep makes sure that the OS properly initializes.
+</div>
 
 Hopefully it is obvious, but the `builders` section shouldn't actually
 contain "...", it should be the contents setup in the previous page
@@ -75,7 +84,7 @@ With the provisioner configured, give it a pass once again through
 `packer validate` to verify everything is okay, then build it using
 `packer build example.json`. The output should look similar to when you
 built your first image, except this time there will be a new step where
-the provisoning is run.
+the provisioning is run.
 
 The output from the provisioner is too verbose to include in this
 guide, since it contains all the output from the shell scripts. But you
